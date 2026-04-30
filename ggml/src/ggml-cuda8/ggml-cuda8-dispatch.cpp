@@ -9,6 +9,7 @@
 //   REDUCE_MAX_ROWS_F32
 
 #include "ggml-cuda8-dispatch.h"
+#include <cstring>
 
 #include "ggml-cuda8-cpy.h"
 #include "ggml-cuda8-add.h"
@@ -49,6 +50,8 @@ const char * ggml_cuda8_op_name(int op_id) {
         case GGML_CUDA8_OP_REDUCE_SUM_ROWS_F32:  return "REDUCE_SUM_ROWS_F32";
         case GGML_CUDA8_OP_REDUCE_MAX_ROWS_F32:  return "REDUCE_MAX_ROWS_F32";
         case GGML_CUDA8_OP_SOFTMAX_ROWS_F32:     return "SOFTMAX_ROWS_F32";
+        case GGML_CUDA8_OP_RMS_NORM_F32:        return "RMS_NORM_F32";
+        case GGML_CUDA8_OP_MUL_F32:              return "MUL_F32";
         default:                                  return "UNKNOWN";
     }
 }
@@ -154,6 +157,70 @@ static int exec_mul_mat_q8_0_f32_vec(
     return rc;
 }
 
+
+// -- G24A: RMS_NORM_F32 helpers -----------------------------------------------
+extern "C" int ggml_cuda8_op_rms_norm_f32(
+        const float * x, float * y,
+        int nrows, int ncols, float eps);
+
+static int ggml_cuda8_supported_rms_norm_f32(
+        const struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * dst) {
+    (void) ctx;
+    if (src0 == NULL || dst == NULL) return 0;
+    if (src0->type != GGML_TYPE_F32) return 0;
+    if (dst->type  != GGML_TYPE_F32) return 0;
+    return 1;
+}
+
+static int ggml_cuda8_exec_rms_norm_f32(
+        struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        struct ggml_tensor * dst) {
+    (void) ctx;
+    float eps;
+    std::memcpy(&eps, dst->op_params, sizeof(float));
+    const int ncols = (int) src0->ne[0];
+    const int nrows = (int)(src0->ne[1] * src0->ne[2] * src0->ne[3]);
+    return ggml_cuda8_op_rms_norm_f32(
+        (const float *) src0->data,
+        (float *)       dst->data,
+        nrows, ncols, eps);
+}
+
+
+// -- G26A: MUL_F32 element-wise helpers ---------------------------------------
+extern "C" int ggml_cuda8_mul_f32_launch(
+        const float * a, const float * b, float * c, int n);
+
+static int ggml_cuda8_supported_mul_f32(
+        const struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * src1,
+        const struct ggml_tensor * dst) {
+    (void) ctx;
+    if (src0 == NULL || src1 == NULL || dst == NULL) return 0;
+    if (src0->type != GGML_TYPE_F32) return 0;
+    if (src1->type != GGML_TYPE_F32) return 0;
+    if (dst->type  != GGML_TYPE_F32) return 0;
+    return 1;
+}
+
+static int ggml_cuda8_exec_mul_f32(
+        struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * src1,
+        struct ggml_tensor * dst) {
+    (void) ctx;
+    const int n = (int)(src0->ne[0] * src0->ne[1] * src0->ne[2] * src0->ne[3]);
+    return ggml_cuda8_mul_f32_launch(
+        (const float *) src0->data,
+        (const float *) src1->data,
+        (float *)       dst->data,
+        n);
+}
+
 int ggml_cuda8_dispatch_supported(
     const struct ggml_cuda8_context * ctx,
     int op_id,
@@ -187,6 +254,12 @@ int ggml_cuda8_dispatch_supported(
 
         case GGML_CUDA8_OP_MUL_MAT_Q8_0_F32_VEC:
             return supported_mul_mat_q8_0_f32_vec(ctx, src0, src1, dst);
+        case GGML_CUDA8_OP_RMS_NORM_F32:
+            return ggml_cuda8_supported_rms_norm_f32(ctx, src0, dst);
+
+        case GGML_CUDA8_OP_MUL_F32:
+            return ggml_cuda8_supported_mul_f32(ctx, src0, src1, dst);
+
 
         default:
             return 0;
@@ -236,6 +309,12 @@ int ggml_cuda8_dispatch_execute(
 
         case GGML_CUDA8_OP_MUL_MAT_Q8_0_F32_VEC:
             return exec_mul_mat_q8_0_f32_vec(ctx, src0, src1, dst);
+        case GGML_CUDA8_OP_RMS_NORM_F32:
+            return ggml_cuda8_exec_rms_norm_f32(ctx, src0, dst);
+
+        case GGML_CUDA8_OP_MUL_F32:
+            return ggml_cuda8_exec_mul_f32(ctx, src0, src1, dst);
+
 
         default:
             return -1;

@@ -64,6 +64,8 @@ cuda_add_library(ggml-cuda8-kernels STATIC
     ggml-cuda8-reduce.cu
     ggml-cuda8-softmax.cpp
     ggml-cuda8-softmax.cu
+    ggml-cuda8-rms-norm.cu
+    ggml-cuda8-mul.cu
 )
 
 target_link_libraries(ggml-cuda8-kernels
@@ -1165,6 +1167,57 @@ target_compile_options(ggml-cuda8-ggml-backend-graph-builder-q8_0-residual-scale
 set_property(TARGET ggml-cuda8-ggml-backend-graph-builder-q8_0-residual-scale-add-softmax-sumrows-isolation-smoke APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--gc-sections")
 
 target_link_libraries(ggml-cuda8-ggml-backend-graph-builder-q8_0-residual-scale-add-softmax-sumrows-isolation-smoke
+    ggml-cuda8-kernels
+    ${CUDA_LIBRARIES}
+)
+
+# -- G24A: RMS_NORM smoke test ------------------------------------------------
+cuda_add_executable(ggml-cuda8-rms-norm-smoke
+    ggml-cuda8-rms-norm-smoke.cu
+    ggml-cuda8-rms-norm.cu)
+target_link_libraries(ggml-cuda8-rms-norm-smoke ${CUDA_LIBRARIES})
+set_target_properties(ggml-cuda8-rms-norm-smoke PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+# -- G26A: element-wise MUL smoke test ----------------------------------------
+cuda_add_executable(ggml-cuda8-mul-smoke
+    ggml-cuda8-mul-smoke.cu
+    ggml-cuda8-mul.cu)
+target_link_libraries(ggml-cuda8-mul-smoke ${CUDA_LIBRARIES})
+set_target_properties(ggml-cuda8-mul-smoke PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+
+
+# -- G27A: RMS_NORM -> MUL graph-builder smoke -------------------------------
+cuda_add_executable(ggml-cuda8-ggml-backend-graph-builder-rmsnorm-mul-smoke
+    ../ggml.c
+    ../ggml-quants.c
+    ../ggml-threading.cpp
+    ggml-cuda8-ggml-backend-graph-builder-rmsnorm-mul-smoke.cpp
+)
+
+target_include_directories(ggml-cuda8-ggml-backend-graph-builder-rmsnorm-mul-smoke PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+)
+
+target_compile_definitions(ggml-cuda8-ggml-backend-graph-builder-rmsnorm-mul-smoke PRIVATE
+    GGML_VERSION="${GGML_VERSION}"
+    GGML_COMMIT="${GGML_COMMIT}"
+)
+
+target_compile_options(ggml-cuda8-ggml-backend-graph-builder-rmsnorm-mul-smoke PRIVATE
+    $<$<COMPILE_LANGUAGE:C>:-ffunction-sections>
+    $<$<COMPILE_LANGUAGE:C>:-fdata-sections>
+    $<$<COMPILE_LANGUAGE:CXX>:-ffunction-sections>
+    $<$<COMPILE_LANGUAGE:CXX>:-fdata-sections>
+)
+
+set_property(TARGET ggml-cuda8-ggml-backend-graph-builder-rmsnorm-mul-smoke
+    APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--gc-sections")
+
+target_link_libraries(ggml-cuda8-ggml-backend-graph-builder-rmsnorm-mul-smoke
     ggml-cuda8-kernels
     ${CUDA_LIBRARIES}
 )

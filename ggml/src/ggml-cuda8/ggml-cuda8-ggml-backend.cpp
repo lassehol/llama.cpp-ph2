@@ -157,22 +157,35 @@ static enum ggml_status cuda8_backend_graph_compute(ggml_backend_t backend, stru
                 if (!cuda8_graph_is_f32(node) ||
                     !cuda8_graph_is_f32(src0) ||
                     !cuda8_graph_is_f32(src1) ||
-                    cuda8_graph_tensor_nelements_4d(src1) != 1 ||
                     !cuda8_graph_same_nelements(src0, node)) {
-                    std::fprintf(stderr, "ggml-cuda8/backend graph_compute: MUL node %d is not supported scalar F32 MUL\n", i);
+                    std::fprintf(stderr,
+                        "ggml-cuda8/backend graph_compute: MUL node %d unsupported types\n", i);
                     ggml_cuda8_context_destroy(ctx);
                     return (enum ggml_status) -1;
                 }
 
                 cuda8_graph_make_flat_f32_alias(src0, &src0_flat);
                 cuda8_graph_make_flat_f32_alias(node, &dst_flat);
-
                 dispatch_src0 = &src0_flat;
-                dispatch_src1 = src1;
-                dispatch_dst = &dst_flat;
+                dispatch_dst  = &dst_flat;
 
-                cuda8_op = GGML_CUDA8_OP_MUL_SCALAR_F32;
-                opname = "MUL_SCALAR_F32";
+                if (cuda8_graph_tensor_nelements_4d(src1) == 1) {
+                    // scalar MUL path
+                    dispatch_src1 = src1;
+                    cuda8_op = GGML_CUDA8_OP_MUL_SCALAR_F32;
+                    opname = "MUL_SCALAR_F32";
+                } else if (cuda8_graph_same_nelements(src0, src1)) {
+                    // G26A: element-wise MUL path
+                    cuda8_graph_make_flat_f32_alias(src1, &src1_flat);
+                    dispatch_src1 = &src1_flat;
+                    cuda8_op = GGML_CUDA8_OP_MUL_F32;
+                    opname = "MUL_F32";
+                } else {
+                    std::fprintf(stderr,
+                        "ggml-cuda8/backend graph_compute: MUL node %d unsupported shape\n", i);
+                    ggml_cuda8_context_destroy(ctx);
+                    return (enum ggml_status) -1;
+                }
             } break;
 
             case GGML_OP_SOFT_MAX: {
@@ -209,6 +222,19 @@ static enum ggml_status cuda8_backend_graph_compute(ggml_backend_t backend, stru
 
                 cuda8_op = GGML_CUDA8_OP_MUL_MAT_Q8_0_F32_VEC;
                 opname = "MUL_MAT_Q8_0xF32_VEC";
+            } break;
+
+            
+            case GGML_OP_RMS_NORM: {
+                if (!cuda8_graph_is_f32(node) || !cuda8_graph_is_f32(src0)) {
+                    std::fprintf(stderr,
+                        "ggml-cuda8/backend graph_compute: RMS_NORM node %d unsupported types\n", i);
+                    ggml_cuda8_context_destroy(ctx);
+                    return (enum ggml_status) -1;
+                }
+
+                cuda8_op = GGML_CUDA8_OP_RMS_NORM_F32;
+                opname = "RMS_NORM_F32";
             } break;
 
             default:

@@ -617,3 +617,157 @@ Implementation notes:
   - real graph-builder attention-like G16D smoke,
   - dispatch-all CUDA8 kernel smoke.
 <!-- G24_STATUS_END -->
+
+<!-- G25_STATUS_START -->
+## G25 status: RMS_NORM kernel + dispatch wiring
+
+Status: **PASS on GTX 560 / CUDA 8 / Fermi**.
+
+G25 adds the RMS_NORM (Root Mean Square Normalization) kernel, the core normalization
+operation used in LLaMA and other modern transformer architectures. The kernel uses
+Fermi-safe shared-memory tree reduction (no warp shuffle).
+
+Validated G25 checkpoints:
+
+- **G25A**: standalone RMS_NORM F32 kernel smoke test passes:
+  - 4 rows x 128 cols, eps=1e-5
+  - max_err = 2.38e-07 (tolerance 1e-4)
+  - Kernel: shared-mem reduction, 256 threads/block, one block per row
+  - Dispatch wiring: GGML_OP_RMS_NORM -> GGML_CUDA8_OP_RMS_NORM_F32
+
+- **G25B**: main regression and README status refreshed for G25A RMS_NORM kernel.
+
+Validated G25A kernel:
+
+    y_i = x_i * rsqrt( mean(x^2) + eps )
+
+    Fermi-safe implementation:
+    - extern __shared__ float sdata[] for partial sums
+    - Tree reduction (no __shfl_down)
+    - rsqrtf for normalization
+    - 256 threads per block, 1 block per row
+
+New files:
+- ggml-cuda8-rms-norm.cu - kernel + extern "C" dispatch wrapper
+- ggml-cuda8-rms-norm-smoke.cu - standalone smoke test
+
+Dispatch pipeline:
+- ggml-cuda8-dispatch.h - GGML_CUDA8_OP_RMS_NORM_F32 enum
+- ggml-cuda8-dispatch.cpp - supported/execute routing
+- ggml-cuda8-ggml-backend.cpp - GGML_OP_RMS_NORM -> GGML_CUDA8_OP_RMS_NORM_F32
+
+Notes:
+- RMS_NORM is the normalization used in LLaMA (replaces LayerNorm).
+- eps is extracted from node->op_params (same as upstream ggml).
+- The kernel is row-wise: each CUDA block processes one row.
+- G25B focused regression passes:
+  - standalone RMS_NORM kernel smoke,
+  - Q8_0 MUL_MAT -> MUL_SCALAR -> residual ADD -> SOFTMAX -> SUM_ROWS graph-builder pipeline smoke,
+  - packed Q8_0 graph-builder MMV smoke,
+  - real graph-builder attention-like G16D smoke,
+  - dispatch-all CUDA8 kernel smoke.
+<!-- G25_STATUS_END -->
+
+<!-- G26_STATUS_START -->
+## G26 status: element-wise MUL kernel + dispatch wiring
+
+Status: **PASS on GTX 560 / CUDA 8 / Fermi**.
+
+G26 adds element-wise MUL (F32), used for post-RMSNorm weight scaling in LLaMA
+and other transformer architectures. The existing GGML_OP_MUL case is extended
+to support both scalar MUL (1-element src1) and element-wise MUL (same-shape src1).
+
+Validated G26 checkpoints:
+
+- **G26A**: standalone element-wise MUL F32 kernel smoke test passes:
+  - n=512, max_err = 0.000000e+00 (tolerance 1e-6)
+  - Kernel: 256 threads/block, c[i] = a[i] * b[i]
+  - Dispatch wiring: GGML_OP_MUL (same-shape) -> GGML_CUDA8_OP_MUL_F32
+
+- **G26B**: main regression and README status refreshed for G26A element-wise MUL.
+
+Validated G26A kernel:
+
+    c[i] = a[i] * b[i]    (element-wise, F32)
+
+    Fermi-safe implementation:
+    - Simple grid-stride loop, 256 threads per block
+    - No shared memory, no reduction
+    - cudaDeviceSynchronize after launch
+
+New files:
+- ggml-cuda8-mul.cu - element-wise MUL kernel + extern "C" launch wrapper
+- ggml-cuda8-mul-smoke.cu - standalone smoke test
+
+Dispatch pipeline:
+- ggml-cuda8-dispatch.h - GGML_CUDA8_OP_MUL_F32 enum
+- ggml-cuda8-dispatch.cpp - supported/execute routing
+- ggml-cuda8-ggml-backend.cpp - GGML_OP_MUL extended:
+    - src1 has 1 element -> GGML_CUDA8_OP_MUL_SCALAR_F32 (existing)
+    - src1 same shape    -> GGML_CUDA8_OP_MUL_F32 (new, G26A)
+
+Notes:
+- Element-wise MUL is the weight-scaling step after RMSNorm in LLaMA.
+- The combined RMS_NORM -> MUL pipeline (G27) will validate the full normalization path.
+- G26B focused regression passes:
+  - standalone element-wise MUL kernel smoke,
+  - standalone RMS_NORM kernel smoke,
+  - Q8_0 MUL_MAT -> MUL_SCALAR -> residual ADD -> SOFTMAX -> SUM_ROWS pipeline smoke,
+  - packed Q8_0 graph-builder MMV smoke,
+  - real graph-builder attention-like G16D smoke,
+  - dispatch-all CUDA8 kernel smoke.
+<!-- G26_STATUS_END -->
+
+<!-- G27_STATUS_START -->
+## G27 status: real GGML graph-builder RMS_NORM -> MUL pipeline
+
+Status: **PASS on GTX 560 / CUDA 8 / Fermi**.
+
+G27 validates the LLaMA normalization pattern as a real GGML graph dispatched
+through the CUDA8 backend graph_compute path:
+
+    y = rms_norm(x, eps) * w
+
+This is the exact pre-attention / pre-FFN normalization step in LLaMA.
+
+Validated G27 checkpoints:
+
+- **G27A**: real GGML graph-builder RMS_NORM -> MUL (element-wise) pipeline passes:
+  - n=512, eps=1e-5
+  - max_err = 2.384186e-07 (tolerance 1e-4)
+  - Graph: 2 nodes (op=25 RMS_NORM, op=7 MUL)
+  - Both ops dispatched through ggml_backend_i.graph_compute
+  - Device-resident buffers with residency tracking
+
+- **G27B**: main regression and README status refreshed for G27A.
+
+Validated G27A graph:
+
+    node 0: GGML_OP_RMS_NORM  -> GGML_CUDA8_OP_RMS_NORM_F32
+    node 1: GGML_OP_MUL       -> GGML_CUDA8_OP_MUL_F32
+
+    x (F32, n=512)
+     |
+     ggml_rms_norm(x, eps=1e-5)
+     |
+     ggml_mul(normed, w)
+     |
+     y (F32, n=512)
+
+Notes:
+- This is the first multi-op pipeline combining normalization + element-wise ops.
+- RMS_NORM uses Fermi-safe shared-memory tree reduction (no warp shuffle).
+- MUL uses simple grid-stride element-wise kernel.
+- op_params (eps) propagation validated through graph_compute dispatch.
+- G27B focused regression passes:
+  - RMS_NORM -> MUL graph-builder pipeline smoke,
+  - standalone RMS_NORM kernel smoke,
+  - standalone element-wise MUL kernel smoke,
+  - Q8_0 MUL_MAT -> MUL_SCALAR -> residual ADD -> SOFTMAX -> SUM_ROWS pipeline smoke,
+  - packed Q8_0 graph-builder MMV smoke,
+  - real graph-builder attention-like G16D smoke,
+  - dispatch-all CUDA8 kernel smoke.
+<!-- G27_STATUS_END -->
+
+
+
