@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export PATH=/opt/cmake-3.22.6-linux-x86_64/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+hash -r
+
+ROOT="/workspace/notebooks/llama.cpp-ph2"
+BUILD="$ROOT/build-cuda8-parent"
+
+cd "$BUILD"
+
+echo "== Toolchain =="
+echo "cmake: $(command -v cmake)"
+cmake --version | head -1
+echo "make:  $(command -v make)"
+make --version | head -1
+echo
+
+echo "== Configure CUDA8 parent build =="
+cmake .. -DGGML_CUDA8=ON -DGGML_CUDA=OFF -DBUILD_SHARED_LIBS=OFF
+
+run_target() {
+    target="$1"
+    exe="$2"
+    echo
+    echo "---- build: $target ----"
+    make -j1 "$target"
+    echo "---- run: ./bin/$exe ----"
+    "./bin/$exe"
+}
+
+echo
+echo "== CUDA8 G11/G12/G13/G14/G15 regression =="
+
+# G11A/G11B buffer and residency foundation
+run_target ggml-cuda8-ggml-buffer-smoke ggml-cuda8-ggml-buffer-smoke
+run_target ggml-cuda8-ggml-buffer-offset-smoke ggml-cuda8-ggml-buffer-offset-smoke
+run_target ggml-cuda8-ggml-buffer-dispatch-smoke ggml-cuda8-ggml-buffer-dispatch-smoke
+run_target ggml-cuda8-ggml-buffer-residency-smoke ggml-cuda8-ggml-buffer-residency-smoke
+
+# G11 device-resident single-op paths
+run_target ggml-cuda8-ggml-buffer-device-add-smoke ggml-cuda8-ggml-buffer-device-add-smoke
+run_target ggml-cuda8-ggml-buffer-device-scalar-smoke ggml-cuda8-ggml-buffer-device-scalar-smoke
+run_target ggml-cuda8-ggml-buffer-device-softmax-smoke ggml-cuda8-ggml-buffer-device-softmax-smoke
+run_target ggml-cuda8-ggml-buffer-device-reduce-smoke ggml-cuda8-ggml-buffer-device-reduce-smoke
+
+# G11 direct device-resident graph paths
+run_target ggml-cuda8-ggml-buffer-device-graph-smoke ggml-cuda8-ggml-buffer-device-graph-smoke
+run_target ggml-cuda8-ggml-buffer-device-softmax-graph-smoke ggml-cuda8-ggml-buffer-device-softmax-graph-smoke
+run_target ggml-cuda8-ggml-buffer-device-attnlike-smoke ggml-cuda8-ggml-buffer-device-attnlike-smoke
+
+# G12 minimal backend object and backend-owned buffers/graphs
+run_target ggml-cuda8-ggml-backend-probe ggml-cuda8-ggml-backend-probe
+run_target ggml-cuda8-ggml-backend-buffer-graph-smoke ggml-cuda8-ggml-backend-buffer-graph-smoke
+run_target ggml-cuda8-ggml-backend-attnlike-smoke ggml-cuda8-ggml-backend-attnlike-smoke
+
+# G13 compute-shaped backend callback paths
+run_target ggml-cuda8-ggml-backend-compute-probe ggml-cuda8-ggml-backend-compute-probe
+run_target ggml-cuda8-ggml-backend-compute-attnlike-smoke ggml-cuda8-ggml-backend-compute-attnlike-smoke
+
+# G14 real ggml_backend_i graph API shape probe
+run_target ggml-cuda8-ggml-backend-graph-api-probe ggml-cuda8-ggml-backend-graph-api-probe
+
+# G15 real ggml_backend_i graph_compute execution paths
+run_target ggml-cuda8-ggml-backend-graph-compute-add-smoke ggml-cuda8-ggml-backend-graph-compute-add-smoke
+run_target ggml-cuda8-ggml-backend-graph-compute-add-mul-smoke ggml-cuda8-ggml-backend-graph-compute-add-mul-smoke
+run_target ggml-cuda8-ggml-backend-graph-compute-softmax-smoke ggml-cuda8-ggml-backend-graph-compute-softmax-smoke
+run_target ggml-cuda8-ggml-backend-graph-compute-attnlike-smoke ggml-cuda8-ggml-backend-graph-compute-attnlike-smoke
+
+# G16 real GGML graph-builder graph_compute smoke coverage
+run_target ggml-cuda8-ggml-backend-graph-builder-add-smoke ggml-cuda8-ggml-backend-graph-builder-add-smoke
+run_target ggml-cuda8-ggml-backend-graph-builder-add-mul-smoke ggml-cuda8-ggml-backend-graph-builder-add-mul-smoke
+run_target ggml-cuda8-ggml-backend-graph-builder-softmax-smoke ggml-cuda8-ggml-backend-graph-builder-softmax-smoke
+run_target ggml-cuda8-ggml-backend-graph-builder-attnlike-smoke ggml-cuda8-ggml-backend-graph-builder-attnlike-smoke
+
+# G17 real GGML graph-builder Q8_0 MUL_MAT graph_compute smoke coverage
+run_target ggml-cuda8-ggml-backend-graph-builder-q8_0-mmv-smoke ggml-cuda8-ggml-backend-graph-builder-q8_0-mmv-smoke
+
+# G18 real GGML graph-builder Q8_0 MUL_MAT -> ADD graph_compute smoke coverage
+run_target ggml-cuda8-ggml-backend-graph-builder-q8_0-add-smoke ggml-cuda8-ggml-backend-graph-builder-q8_0-add-smoke
+
+# G18 real GGML graph-builder Q8_0 MUL_MAT -> MUL_SCALAR -> ADD graph_compute smoke coverage
+run_target ggml-cuda8-ggml-backend-graph-builder-q8_0-mul-add-smoke ggml-cuda8-ggml-backend-graph-builder-q8_0-mul-add-smoke
+
+# G19 real GGML graph-builder Q8_0 MUL_MAT -> MUL_SCALAR -> ADD -> SOFTMAX graph_compute smoke coverage
+run_target ggml-cuda8-ggml-backend-graph-builder-q8_0-mul-add-softmax-smoke ggml-cuda8-ggml-backend-graph-builder-q8_0-mul-add-softmax-smoke
+
+# G20 real GGML graph-builder Q8_0 MUL_MAT -> MUL_SCALAR -> ADD -> SOFTMAX -> SUM_ROWS graph_compute smoke coverage
+run_target ggml-cuda8-ggml-backend-graph-builder-q8_0-mul-add-softmax-sumrows-smoke ggml-cuda8-ggml-backend-graph-builder-q8_0-mul-add-softmax-sumrows-smoke
+
+# G21 real GGML graph-builder Q8_0 MUL_MAT -> residual ADD graph_compute smoke coverage
+run_target ggml-cuda8-ggml-backend-graph-builder-q8_0-residual-add-smoke ggml-cuda8-ggml-backend-graph-builder-q8_0-residual-add-smoke
+
+# G22 real GGML graph-builder Q8_0 MUL_MAT -> residual ADD -> SOFTMAX graph_compute smoke coverage
+run_target ggml-cuda8-ggml-backend-graph-builder-q8_0-residual-add-softmax-smoke ggml-cuda8-ggml-backend-graph-builder-q8_0-residual-add-softmax-smoke
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Legacy/host-backed dispatcher coverage
+run_target ggml-cuda8-dispatch-all-smoke ggml-cuda8-dispatch-all-smoke
+
+echo
+echo "CUDA8 G22B regression SUCCESS"

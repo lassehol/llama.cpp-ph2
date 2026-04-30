@@ -491,3 +491,25 @@ if (BUILD_SHARED_LIBS)
         target_compile_definitions(${target} PUBLIC  GGML_SHARED)
     endforeach()
 endif()
+
+
+# ---------------------------------------------------------------------------
+# Legacy CUDA8 / Fermi backend experiment.
+#
+# This is intentionally separate from modern GGML_CUDA.
+# Current scope:
+#   - standalone CUDA8 smoke/bench targets
+#   - GGML-shaped Q8_0 mul_mat shim smoke
+#   - no backend registration yet
+# ---------------------------------------------------------------------------
+
+option(GGML_CUDA8 "Enable legacy CUDA8/Fermi backend experiment" OFF)
+
+if (GGML_CUDA8)
+    if (GGML_CUDA)
+        message(FATAL_ERROR "GGML_CUDA8 and GGML_CUDA are mutually exclusive. Use -DGGML_CUDA=OFF with -DGGML_CUDA8=ON.")
+    endif()
+
+    message(STATUS "GGML CUDA8: enabling legacy CUDA8/Fermi backend experiment")
+    add_subdirectory(ggml-cuda8)
+endif()
