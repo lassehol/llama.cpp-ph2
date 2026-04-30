@@ -52,6 +52,7 @@ const char * ggml_cuda8_op_name(int op_id) {
         case GGML_CUDA8_OP_SOFTMAX_ROWS_F32:     return "SOFTMAX_ROWS_F32";
         case GGML_CUDA8_OP_RMS_NORM_F32:        return "RMS_NORM_F32";
         case GGML_CUDA8_OP_MUL_F32:              return "MUL_F32";
+        case GGML_CUDA8_OP_ROPE_F32:             return "ROPE_F32";
         default:                                  return "UNKNOWN";
     }
 }
@@ -221,6 +222,64 @@ static int ggml_cuda8_exec_mul_f32(
         n);
 }
 
+
+// -- G28A: ROPE_F32 helpers ---------------------------------------------------
+extern "C" int ggml_cuda8_op_rope_f32(
+        const float * x, float * dst, const int * pos,
+        int ne0, int ne1, int ne2, int ne3,
+        int n_dims, float freq_base, float freq_scale);
+
+static int ggml_cuda8_supported_rope_f32(
+        const struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * src1,
+        const struct ggml_tensor * dst) {
+    (void) ctx;
+    if (src0 == NULL || src1 == NULL || dst == NULL) return 0;
+    if (src0->type != GGML_TYPE_F32) return 0;
+    if (src1->type != GGML_TYPE_I32) return 0;
+    if (dst->type  != GGML_TYPE_F32) return 0;
+    return 1;
+}
+
+static int ggml_cuda8_exec_rope_f32(
+        struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * src1,
+        struct ggml_tensor * dst) {
+    (void) ctx;
+
+    // Extract op_params from dst (the graph node)
+    int32_t op_params[15];
+    std::memcpy(op_params, dst->op_params, sizeof(op_params));
+
+    int n_dims = op_params[1];
+    int mode   = op_params[2];
+
+    float freq_base, freq_scale, ext_factor;
+    std::memcpy(&freq_base,   &op_params[5], sizeof(float));
+    std::memcpy(&freq_scale,  &op_params[6], sizeof(float));
+    std::memcpy(&ext_factor,  &op_params[7], sizeof(float));
+
+    if (mode != 0 || ext_factor != 0.0f) {
+        std::fprintf(stderr, "ggml-cuda8/rope: unsupported mode=%d ext=%.1f\n",
+                     mode, (double)ext_factor);
+        return -1;
+    }
+
+    int ne0 = (int) src0->ne[0];
+    int ne1 = (int) src0->ne[1];
+    int ne2 = (int) src0->ne[2];
+    int ne3 = (int) src0->ne[3];
+
+    return ggml_cuda8_op_rope_f32(
+        (const float *) src0->data,
+        (float *)       dst->data,
+        (const int *)   src1->data,
+        ne0, ne1, ne2, ne3,
+        n_dims, freq_base, freq_scale);
+}
+
 int ggml_cuda8_dispatch_supported(
     const struct ggml_cuda8_context * ctx,
     int op_id,
@@ -259,6 +318,9 @@ int ggml_cuda8_dispatch_supported(
 
         case GGML_CUDA8_OP_MUL_F32:
             return ggml_cuda8_supported_mul_f32(ctx, src0, src1, dst);
+
+        case GGML_CUDA8_OP_ROPE_F32:
+            return ggml_cuda8_supported_rope_f32(ctx, src0, src1, dst);
 
 
         default:
@@ -314,6 +376,9 @@ int ggml_cuda8_dispatch_execute(
 
         case GGML_CUDA8_OP_MUL_F32:
             return ggml_cuda8_exec_mul_f32(ctx, src0, src1, dst);
+
+        case GGML_CUDA8_OP_ROPE_F32:
+            return ggml_cuda8_exec_rope_f32(ctx, src0, src1, dst);
 
 
         default:

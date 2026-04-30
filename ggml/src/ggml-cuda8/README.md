@@ -769,5 +769,71 @@ Notes:
   - dispatch-all CUDA8 kernel smoke.
 <!-- G27_STATUS_END -->
 
+<!-- G28_STATUS_START -->
+## G28 status: ROPE (Rotary Positional Embedding) kernel + dispatch wiring
+
+Status: **PASS on GTX 560 / CUDA 8 / Fermi**.
+
+G28 adds the ROPE kernel, which applies rotary positional embeddings to query/key
+tensors. This is the position-encoding mechanism used in LLaMA and most modern
+transformer architectures, replacing absolute or learned positional embeddings.
+
+Validated G28 checkpoints:
+
+- **G28A**: standalone ROPE F32 kernel smoke test passes:
+  - head_dim=64, n_heads=4, seq_len=8, n_dims=64
+  - freq_base=10000.0, freq_scale=1.0
+  - max_err = 5.960464e-07 (tolerance 1e-4)
+  - Kernel: one thread per pair, cosf/sinf rotation, Fermi-safe
+  - Dispatch wiring: GGML_OP_ROPE -> GGML_CUDA8_OP_ROPE_F32
+
+- **G28B**: main regression and README status refreshed for G28A ROPE kernel.
+
+Validated G28A kernel:
+
+    For each pair (x0, x1) at position p:
+      theta = p * freq_base^(-2*pair/n_dims) * freq_scale
+      dst[2k]   = x0 * cos(theta) - x1 * sin(theta)
+      dst[2k+1] = x0 * sin(theta) + x1 * cos(theta)
+
+    Fermi-safe implementation:
+    - One thread per pair of elements
+    - cosf/sinf/powf (no warp shuffle, no shared memory needed)
+    - 256 threads per block, grid covers all pairs across heads/positions
+    - Pairs beyond n_dims pass through unchanged
+
+    op_params layout (int32_t[15]):
+      [0]=n_past  [1]=n_dims  [2]=mode
+      [5]=freq_base  [6]=freq_scale  [7]=ext_factor
+
+    Supported: mode=0 (basic ROPE), ext_factor=0 (no YaRN)
+
+New files:
+- ggml-cuda8-rope.cu - ROPE kernel + extern "C" dispatch wrapper
+- ggml-cuda8-rope-smoke.cu - standalone smoke test
+
+Dispatch pipeline:
+- ggml-cuda8-dispatch.h - GGML_CUDA8_OP_ROPE_F32 enum
+- ggml-cuda8-dispatch.cpp - supported/execute routing (extracts op_params)
+- ggml-cuda8-ggml-backend.cpp - GGML_OP_ROPE -> GGML_CUDA8_OP_ROPE_F32
+  (tensors passed without flattening; ROPE needs multi-dim ne[] + op_params)
+
+Notes:
+- ROPE is the first op requiring both F32 and I32 input tensors (src1 = positions).
+- ROPE is the first op where tensors are NOT flattened in the backend mapping,
+  because the kernel needs the full multi-dimensional shape.
+- Basic mode only (mode=0, no YaRN, no mrope) -- sufficient for LLaMA inference.
+- G28B focused regression passes:
+  - standalone ROPE kernel smoke,
+  - RMS_NORM -> MUL graph-builder pipeline smoke,
+  - standalone RMS_NORM kernel smoke,
+  - standalone element-wise MUL kernel smoke,
+  - Q8_0 MUL_MAT -> MUL_SCALAR -> residual ADD -> SOFTMAX -> SUM_ROWS pipeline smoke,
+  - packed Q8_0 graph-builder MMV smoke,
+  - real graph-builder attention-like G16D smoke,
+  - dispatch-all CUDA8 kernel smoke.
+<!-- G28_STATUS_END -->
+
+
 
 

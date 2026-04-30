@@ -66,6 +66,7 @@ cuda_add_library(ggml-cuda8-kernels STATIC
     ggml-cuda8-softmax.cu
     ggml-cuda8-rms-norm.cu
     ggml-cuda8-mul.cu
+    ggml-cuda8-rope.cu
 )
 
 target_link_libraries(ggml-cuda8-kernels
@@ -1221,3 +1222,12 @@ target_link_libraries(ggml-cuda8-ggml-backend-graph-builder-rmsnorm-mul-smoke
     ggml-cuda8-kernels
     ${CUDA_LIBRARIES}
 )
+
+# -- G28A: ROPE smoke test ----------------------------------------------------
+cuda_add_executable(ggml-cuda8-rope-smoke
+    ggml-cuda8-rope-smoke.cu
+    ggml-cuda8-rope.cu)
+target_link_libraries(ggml-cuda8-rope-smoke ${CUDA_LIBRARIES})
+set_target_properties(ggml-cuda8-rope-smoke PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
