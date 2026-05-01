@@ -1071,6 +1071,73 @@ Complete CUDA8 backend op inventory (G11-G32):
   - dispatch-all CUDA8 kernel smoke.
 <!-- G32_STATUS_END -->
 
+<!-- G33_STATUS_START -->
+## G33 status: GET_ROWS (embedding lookup) kernel + dispatch wiring
+
+Status: **PASS on GTX 560 / CUDA 8 / Fermi**.
+
+G33 adds GET_ROWS (GGML_OP_GET_ROWS) support for F32 embedding tables.
+This is the first op in the LLaMA inference pipeline -- it converts integer
+token IDs into dense embedding vectors by looking up rows from the embedding
+weight matrix.
+
+Validated G33 checkpoints:
+
+- **G33A**: standalone GET_ROWS F32 kernel smoke test passes:
+  - vocab=32, embd=64, n_tokens=4, tokens=[3, 7, 0, 15]
+  - max_err = 0.000000e+00 (exact row copy)
+  - Kernel: one block per token, 256 threads stride over columns
+  - Dispatch wiring: GGML_OP_GET_ROWS -> GGML_CUDA8_OP_GET_ROWS_F32
+
+- **G33B**: main regression and README status refreshed for G33A.
+
+Validated G33A kernel:
+
+    dst[token, :] = src0[src1[token], :]
+
+    For each token index t in src1 (I32):
+      copy row src1[t] from embedding table src0 (F32) to dst row t
+
+    Fermi-safe implementation:
+    - One CUDA block per token (gridDim.x = n_tokens)
+    - 256 threads per block stride over embedding columns
+    - No shared memory, no reduction
+
+New files:
+- ggml-cuda8-getrows.cu - kernel + extern "C" dispatch wrapper
+- ggml-cuda8-getrows-smoke.cu - standalone smoke test
+
+Dispatch pipeline:
+- ggml-cuda8-dispatch.h - GGML_CUDA8_OP_GET_ROWS_F32 enum
+- ggml-cuda8-dispatch.cpp - supported/execute routing
+- ggml-cuda8-ggml-backend.cpp - GGML_OP_GET_ROWS -> GGML_CUDA8_OP_GET_ROWS_F32
+  (F32 src0 + I32 src1, tensors not flattened)
+
+Complete CUDA8 backend op inventory (G11-G33, 15 ops):
+- CPY_F32, ADD_F32, ADD_SCALAR_F32, MUL_SCALAR_F32
+- REDUCE_SUM_ROWS_F32, REDUCE_MAX_ROWS_F32, SOFTMAX_ROWS_F32
+- MUL_MAT_Q8_0xF32_VEC, RMS_NORM_F32, MUL_F32, ROPE_F32
+- RESHAPE/VIEW/PERMUTE/TRANSPOSE (no-ops)
+- CONT_F32, DIAG_MASK_INF_F32, GET_ROWS_F32
+
+With GET_ROWS, the complete LLaMA inference pipeline is now possible:
+  tokens -> GET_ROWS -> [transformer block x N] -> output
+
+- G33B focused regression passes:
+  - standalone GET_ROWS kernel smoke,
+  - full transformer block pipeline smoke (6-op),
+  - standalone DIAG_MASK_INF kernel smoke,
+  - CONT -> ADD graph-builder pipeline smoke,
+  - RESHAPE no-op graph-builder pipeline smoke,
+  - ROPE standalone kernel smoke,
+  - RMS_NORM -> MUL graph-builder pipeline smoke,
+  - standalone RMS_NORM kernel smoke,
+  - standalone element-wise MUL kernel smoke,
+  - Q8_0 pipelines, graph-builder attention-like smoke,
+  - dispatch-all CUDA8 kernel smoke.
+<!-- G33_STATUS_END -->
+
+
 
 
 
