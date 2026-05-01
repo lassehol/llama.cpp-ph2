@@ -55,6 +55,7 @@ const char * ggml_cuda8_op_name(int op_id) {
         case GGML_CUDA8_OP_ROPE_F32:             return "ROPE_F32";
         case GGML_CUDA8_OP_CONT_F32:             return "CONT_F32";
         case GGML_CUDA8_OP_DIAG_MASK_INF_F32:  return "DIAG_MASK_INF_F32";
+        case GGML_CUDA8_OP_GET_ROWS_F32:       return "GET_ROWS_F32";
         default:                                  return "UNKNOWN";
     }
 }
@@ -347,6 +348,40 @@ static int ggml_cuda8_exec_diag_mask_inf_f32(
         ncols, nrows, rows_per_channel, n_past);
 }
 
+
+// -- G33A: GET_ROWS_F32 helpers -----------------------------------------------
+extern "C" int ggml_cuda8_op_get_rows_f32(
+        const float * src0, const int * src1, float * dst,
+        int ne00, int n_tokens);
+
+static int ggml_cuda8_supported_get_rows_f32(
+        const struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * src1,
+        const struct ggml_tensor * dst) {
+    (void) ctx;
+    if (src0 == NULL || src1 == NULL || dst == NULL) return 0;
+    if (src0->type != GGML_TYPE_F32) return 0;
+    if (src1->type != GGML_TYPE_I32) return 0;
+    if (dst->type  != GGML_TYPE_F32) return 0;
+    return 1;
+}
+
+static int ggml_cuda8_exec_get_rows_f32(
+        struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * src1,
+        struct ggml_tensor * dst) {
+    (void) ctx;
+    const int ne00 = (int) src0->ne[0];
+    const int n_tokens = (int) src1->ne[0];
+    return ggml_cuda8_op_get_rows_f32(
+        (const float *) src0->data,
+        (const int *)   src1->data,
+        (float *)       dst->data,
+        ne00, n_tokens);
+}
+
 int ggml_cuda8_dispatch_supported(
     const struct ggml_cuda8_context * ctx,
     int op_id,
@@ -394,6 +429,9 @@ int ggml_cuda8_dispatch_supported(
 
         case GGML_CUDA8_OP_DIAG_MASK_INF_F32:
             return ggml_cuda8_supported_diag_mask_inf_f32(ctx, src0, dst);
+
+        case GGML_CUDA8_OP_GET_ROWS_F32:
+            return ggml_cuda8_supported_get_rows_f32(ctx, src0, src1, dst);
 
 
         default:
@@ -458,6 +496,9 @@ int ggml_cuda8_dispatch_execute(
 
         case GGML_CUDA8_OP_DIAG_MASK_INF_F32:
             return ggml_cuda8_exec_diag_mask_inf_f32(ctx, src0, dst);
+
+        case GGML_CUDA8_OP_GET_ROWS_F32:
+            return ggml_cuda8_exec_get_rows_f32(ctx, src0, src1, dst);
 
 
         default:

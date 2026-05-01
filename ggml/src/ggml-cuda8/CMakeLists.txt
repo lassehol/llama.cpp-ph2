@@ -69,6 +69,7 @@ cuda_add_library(ggml-cuda8-kernels STATIC
     ggml-cuda8-rope.cu
     cpy.cu
     ggml-cuda8-diagmask.cu
+    ggml-cuda8-getrows.cu
 )
 
 target_link_libraries(ggml-cuda8-kernels
@@ -1339,4 +1340,12 @@ target_link_libraries(ggml-cuda8-ggml-backend-graph-builder-transformer-block-sm
     ggml-cuda8-kernels
     ${CUDA_LIBRARIES}
 )
+
+# -- G33A: GET_ROWS smoke test ------------------------------------------------
+cuda_add_executable(ggml-cuda8-getrows-smoke
+    ggml-cuda8-getrows-smoke.cu
+    ggml-cuda8-getrows.cu)
+target_link_libraries(ggml-cuda8-getrows-smoke ${CUDA_LIBRARIES})
+set_target_properties(ggml-cuda8-getrows-smoke PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 

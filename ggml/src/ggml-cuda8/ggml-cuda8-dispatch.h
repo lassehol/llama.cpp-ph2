@@ -42,6 +42,8 @@ enum ggml_cuda8_op_id {
     GGML_CUDA8_OP_CONT_F32,
 
     GGML_CUDA8_OP_DIAG_MASK_INF_F32,
+
+    GGML_CUDA8_OP_GET_ROWS_F32,
 };
 
 const char * ggml_cuda8_op_name(int op_id);
