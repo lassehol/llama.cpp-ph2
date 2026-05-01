@@ -1208,6 +1208,90 @@ Notes:
   - dispatch-all CUDA8 kernel smoke.
 <!-- G34_STATUS_END -->
 
+<!-- G35_STATUS_START -->
+## G35 status: full end-to-end LLaMA inference pipeline (15 ops, ALL op types)
+
+Status: **PASS on GTX 560 / CUDA 8 / Fermi**.
+
+G35 is the culmination of the entire CUDA8 backend project (G11-G35). It
+validates every op built for this backend in a single 15-op graph that
+exercises the complete LLaMA inference pipeline end-to-end: from token ID
+input through embedding lookup, normalization, Q/K/V projection with
+rotary positional embeddings, causal masking, softmax attention, value
+weighting, and final output.
+
+Validated G35 checkpoints:
+
+- **G35A**: full end-to-end pipeline smoke test passes:
+  - 15 graph nodes, 9 leaf tensors, 24 total tensors
+  - vocab=32, embd=128, proj=64, token=5, rope_pos=7, n_past=31
+  - max_err = 1.192093e-06 (tolerance 1e-3)
+  - softmax_sum = 0.999999881 (tolerance 1e-4 from 1.0)
+  - masked = 32/64 (causal mask correct: cols 32-63 masked)
+  - 132 KB device buffer
+
+- **G35B**: main regression and README status refreshed for G35A.
+
+Validated G35A pipeline (15 ops, 9 op types):
+
+     token_id=5 [I32]
+       |
+     1. GET_ROWS(embed[32x128])          -> emb [128]         GET_ROWS_F32
+     2. RMS_NORM(emb, eps=1e-5)          -> norm [128]        RMS_NORM_F32
+     3. MUL(norm, w_norm)                -> x_n [128]         MUL_F32 (elem)
+       |
+       +-- 4. MUL_MAT(Wq[64x128], x_n)  -> q [64]           MUL_MAT_Q8_0xF32
+       +-- 5. MUL_MAT(Wk[64x128], x_n)  -> k [64]           MUL_MAT_Q8_0xF32
+       +-- 6. MUL_MAT(Wv[64x128], x_n)  -> v [64]           MUL_MAT_Q8_0xF32
+            |
+     7. ROPE(q, pos=7, n_dims=64)        -> q_r [64]         ROPE_F32
+     8. ROPE(k, pos=7, n_dims=64)        -> k_r [64]         ROPE_F32
+     9. MUL(q_r, 1/sqrt(64))             -> q_s [64]         MUL_SCALAR_F32
+    10. ADD(q_s, k_r)                     -> scores [64]      ADD_F32
+    11. DIAG_MASK_INF(scores, n_past=31)  -> masked [64]      DIAG_MASK_INF_F32
+    12. SOFTMAX(masked)                   -> probs [64]       SOFTMAX_ROWS_F32
+    13. MUL(probs, v)                     -> attn [64]        MUL_F32 (elem)
+    14. CONT(attn)                        -> attn_c [64]      CONT_F32
+    15. ADD(attn_c, bias)                 -> out [64]         ADD_F32
+
+All 9 op types exercised:
+  1. GET_ROWS_F32           - embedding lookup (G33)
+  2. RMS_NORM_F32           - layer normalization (G25)
+  3. MUL_F32                - element-wise multiply (G26)
+  4. MUL_MAT_Q8_0xF32_VEC  - quantized projection x3 (G17)
+  5. ROPE_F32               - rotary positional embeddings x2 (G28)
+  6. MUL_SCALAR_F32         - attention scaling (G13)
+  7. ADD_F32                - residual/bias x2 (G12)
+  8. DIAG_MASK_INF_F32      - causal masking (G31)
+  9. SOFTMAX_ROWS_F32       - attention probabilities (G15)
+  +  CONT_F32               - contiguous copy (G30)
+
+Complete CUDA8 backend op inventory (G11-G35, 15 dispatch ops + 4 no-ops):
+  Kernels:   CPY_F32, ADD_F32, ADD_SCALAR_F32, MUL_SCALAR_F32,
+             REDUCE_SUM_ROWS_F32, REDUCE_MAX_ROWS_F32, SOFTMAX_ROWS_F32,
+             MUL_MAT_Q8_0xF32_VEC, RMS_NORM_F32, MUL_F32, ROPE_F32,
+             CONT_F32, DIAG_MASK_INF_F32, GET_ROWS_F32
+  No-ops:    RESHAPE, VIEW, PERMUTE, TRANSPOSE
+
+- G35B focused regression passes:
+  - full end-to-end pipeline smoke (15-op, all 9 op types),
+  - full attention pipeline smoke (11-op, Q/K/V fan-out),
+  - full transformer block pipeline smoke (6-op),
+  - standalone GET_ROWS kernel smoke,
+  - standalone DIAG_MASK_INF kernel smoke,
+  - CONT -> ADD graph-builder pipeline smoke,
+  - RESHAPE no-op graph-builder pipeline smoke,
+  - ROPE standalone kernel smoke,
+  - RMS_NORM -> MUL graph-builder pipeline smoke,
+  - standalone RMS_NORM kernel smoke,
+  - standalone element-wise MUL kernel smoke,
+  - Q8_0 MUL_MAT -> MUL_SCALAR -> residual ADD -> SOFTMAX -> SUM_ROWS pipeline smoke,
+  - packed Q8_0 graph-builder MMV smoke,
+  - real graph-builder attention-like G16D smoke,
+  - dispatch-all CUDA8 kernel smoke.
+<!-- G35_STATUS_END -->
+
+
 
 
 
