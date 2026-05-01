@@ -1382,3 +1382,36 @@ target_link_libraries(ggml-cuda8-ggml-backend-graph-builder-attention-smoke
     ${CUDA_LIBRARIES}
 )
 
+# -- G35A: Full end-to-end pipeline smoke (ALL ops) ----------------------------
+cuda_add_executable(ggml-cuda8-ggml-backend-graph-builder-e2e-smoke
+    ../ggml.c
+    ../ggml-quants.c
+    ../ggml-threading.cpp
+    ggml-cuda8-ggml-backend-graph-builder-e2e-smoke.cpp
+)
+
+target_include_directories(ggml-cuda8-ggml-backend-graph-builder-e2e-smoke PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+)
+
+target_compile_definitions(ggml-cuda8-ggml-backend-graph-builder-e2e-smoke PRIVATE
+    GGML_VERSION="${GGML_VERSION}"
+    GGML_COMMIT="${GGML_COMMIT}"
+)
+
+target_compile_options(ggml-cuda8-ggml-backend-graph-builder-e2e-smoke PRIVATE
+    $<$<COMPILE_LANGUAGE:C>:-ffunction-sections>
+    $<$<COMPILE_LANGUAGE:C>:-fdata-sections>
+    $<$<COMPILE_LANGUAGE:CXX>:-ffunction-sections>
+    $<$<COMPILE_LANGUAGE:CXX>:-fdata-sections>
+)
+
+set_property(TARGET ggml-cuda8-ggml-backend-graph-builder-e2e-smoke
+    APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--gc-sections")
+
+target_link_libraries(ggml-cuda8-ggml-backend-graph-builder-e2e-smoke
+    ggml-cuda8-kernels
+    ${CUDA_LIBRARIES}
+)
+
