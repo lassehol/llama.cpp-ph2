@@ -54,6 +54,7 @@ const char * ggml_cuda8_op_name(int op_id) {
         case GGML_CUDA8_OP_MUL_F32:              return "MUL_F32";
         case GGML_CUDA8_OP_ROPE_F32:             return "ROPE_F32";
         case GGML_CUDA8_OP_CONT_F32:             return "CONT_F32";
+        case GGML_CUDA8_OP_DIAG_MASK_INF_F32:  return "DIAG_MASK_INF_F32";
         default:                                  return "UNKNOWN";
     }
 }
@@ -310,6 +311,42 @@ static int ggml_cuda8_exec_cont_f32(
         bytes);
 }
 
+
+// -- G31A: DIAG_MASK_INF_F32 helpers -----------------------------------------
+extern "C" int ggml_cuda8_op_diag_mask_inf_f32(
+        const float * x, float * dst,
+        int ncols, int nrows, int rows_per_channel, int n_past);
+
+static int ggml_cuda8_supported_diag_mask_inf_f32(
+        const struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * dst) {
+    (void) ctx;
+    if (src0 == NULL || dst == NULL) return 0;
+    if (src0->type != GGML_TYPE_F32) return 0;
+    if (dst->type  != GGML_TYPE_F32) return 0;
+    return 1;
+}
+
+static int ggml_cuda8_exec_diag_mask_inf_f32(
+        struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        struct ggml_tensor * dst) {
+    (void) ctx;
+
+    int32_t n_past;
+    std::memcpy(&n_past, dst->op_params, sizeof(int32_t));
+
+    const int ncols = (int) src0->ne[0];
+    const int nrows = (int)(src0->ne[1] * src0->ne[2] * src0->ne[3]);
+    const int rows_per_channel = (int) src0->ne[1];
+
+    return ggml_cuda8_op_diag_mask_inf_f32(
+        (const float *) src0->data,
+        (float *)       dst->data,
+        ncols, nrows, rows_per_channel, n_past);
+}
+
 int ggml_cuda8_dispatch_supported(
     const struct ggml_cuda8_context * ctx,
     int op_id,
@@ -354,6 +391,9 @@ int ggml_cuda8_dispatch_supported(
 
         case GGML_CUDA8_OP_CONT_F32:
             return ggml_cuda8_supported_cont_f32(ctx, src0, dst);
+
+        case GGML_CUDA8_OP_DIAG_MASK_INF_F32:
+            return ggml_cuda8_supported_diag_mask_inf_f32(ctx, src0, dst);
 
 
         default:
@@ -415,6 +455,9 @@ int ggml_cuda8_dispatch_execute(
 
         case GGML_CUDA8_OP_CONT_F32:
             return ggml_cuda8_exec_cont_f32(ctx, src0, dst);
+
+        case GGML_CUDA8_OP_DIAG_MASK_INF_F32:
+            return ggml_cuda8_exec_diag_mask_inf_f32(ctx, src0, dst);
 
 
         default:

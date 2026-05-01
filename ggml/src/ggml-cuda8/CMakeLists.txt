@@ -68,6 +68,7 @@ cuda_add_library(ggml-cuda8-kernels STATIC
     ggml-cuda8-mul.cu
     ggml-cuda8-rope.cu
     cpy.cu
+    ggml-cuda8-diagmask.cu
 )
 
 target_link_libraries(ggml-cuda8-kernels
@@ -1297,4 +1298,12 @@ target_link_libraries(ggml-cuda8-ggml-backend-graph-builder-cont-smoke
     ggml-cuda8-kernels
     ${CUDA_LIBRARIES}
 )
+
+# -- G31A: DIAG_MASK_INF smoke test -------------------------------------------
+cuda_add_executable(ggml-cuda8-diagmask-smoke
+    ggml-cuda8-diagmask-smoke.cu
+    ggml-cuda8-diagmask.cu)
+target_link_libraries(ggml-cuda8-diagmask-smoke ${CUDA_LIBRARIES})
+set_target_properties(ggml-cuda8-diagmask-smoke PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 

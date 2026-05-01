@@ -280,6 +280,24 @@ static enum ggml_status cuda8_backend_graph_compute(ggml_backend_t backend, stru
                 opname = "CONT_F32";
             } break;
 
+            
+            case GGML_OP_DIAG_MASK_INF: {
+                if (!cuda8_graph_is_f32(node) ||
+                    !cuda8_graph_is_f32(src0)) {
+                    std::fprintf(stderr,
+                        "ggml-cuda8/backend graph_compute: DIAG_MASK_INF node %d unsupported types\n", i);
+                    ggml_cuda8_context_destroy(ctx);
+                    return (enum ggml_status) -1;
+                }
+
+                // Do NOT flatten -- kernel needs 2D shape + op_params
+                dispatch_src0 = src0;
+                dispatch_dst  = node;
+
+                cuda8_op = GGML_CUDA8_OP_DIAG_MASK_INF_F32;
+                opname = "DIAG_MASK_INF_F32";
+            } break;
+
             default:
                 std::fprintf(stderr, "ggml-cuda8/backend graph_compute: unsupported node %d op=%d\n", i, (int) node->op);
                 ggml_cuda8_context_destroy(ctx);

@@ -928,6 +928,71 @@ Notes:
   - dispatch-all CUDA8 kernel smoke.
 <!-- G30_STATUS_END -->
 
+<!-- G31_STATUS_START -->
+## G31 status: DIAG_MASK_INF (causal masking) kernel + dispatch wiring
+
+Status: **PASS on GTX 560 / CUDA 8 / Fermi**.
+
+G31 adds the DIAG_MASK_INF kernel, which applies causal masking to attention
+score matrices. Elements above the diagonal (future tokens) are masked by
+subtracting FLT_MAX, making them -infinity after softmax. This is the standard
+autoregressive masking used in LLaMA and all decoder-only transformers.
+
+Validated G31 checkpoints:
+
+- **G31A**: standalone DIAG_MASK_INF F32 kernel smoke test passes:
+  - 8x8 matrix, n_past=0, rows_per_channel=8
+  - 28/64 positions masked (upper triangle)
+  - max_err = 0.000000e+00
+  - Visual mask pattern verified:
+    row 0: . X X X X X X X
+    row 1: . . X X X X X X
+    ...
+    row 7: . . . . . . . .
+
+- **G31B**: main regression and README status refreshed for G31A.
+
+Validated G31A kernel:
+
+    dst[row][col] = x[row][col] - (col > n_past + row % rows_per_channel) * FLT_MAX
+
+    Fermi-safe implementation:
+    - dim3 block(1, 256, 1), grid(nrows, ceil(ncols/256), 1)
+    - One thread per element
+    - n_past extracted from op_params[0]
+    - rows_per_channel = ne[1] (number of rows per attention head)
+
+New files:
+- ggml-cuda8-diagmask.cu - kernel + extern "C" dispatch wrapper
+- ggml-cuda8-diagmask-smoke.cu - standalone smoke test with visual mask output
+
+Dispatch pipeline:
+- ggml-cuda8-dispatch.h - GGML_CUDA8_OP_DIAG_MASK_INF_F32 enum
+- ggml-cuda8-dispatch.cpp - supported/execute routing
+- ggml-cuda8-ggml-backend.cpp - GGML_OP_DIAG_MASK_INF -> GGML_CUDA8_OP_DIAG_MASK_INF_F32
+  (tensors passed without flattening; kernel needs 2D shape + op_params)
+
+Notes:
+- Causal masking ensures each token can only attend to itself and previous tokens.
+- Matches upstream ggml-cuda/diagmask.cu logic exactly.
+- n_past=0 for standard autoregressive inference (no KV cache offset).
+- With DIAG_MASK_INF, the full attention pipeline is now possible:
+    Q*K^T -> DIAG_MASK_INF -> SOFTMAX -> V matmul
+- G31B focused regression passes:
+  - standalone DIAG_MASK_INF kernel smoke,
+  - CONT -> ADD graph-builder pipeline smoke,
+  - RESHAPE no-op graph-builder pipeline smoke,
+  - ROPE standalone kernel smoke,
+  - RMS_NORM -> MUL graph-builder pipeline smoke,
+  - standalone RMS_NORM kernel smoke,
+  - standalone element-wise MUL kernel smoke,
+  - Q8_0 MUL_MAT -> MUL_SCALAR -> residual ADD -> SOFTMAX -> SUM_ROWS pipeline smoke,
+  - packed Q8_0 graph-builder MMV smoke,
+  - real graph-builder attention-like G16D smoke,
+  - dispatch-all CUDA8 kernel smoke.
+<!-- G31_STATUS_END -->
+
+
 
 
 
