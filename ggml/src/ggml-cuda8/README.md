@@ -1137,6 +1137,78 @@ With GET_ROWS, the complete LLaMA inference pipeline is now possible:
   - dispatch-all CUDA8 kernel smoke.
 <!-- G33_STATUS_END -->
 
+<!-- G34_STATUS_START -->
+## G34 status: full attention pipeline (11 ops, Q/K/V fan-out)
+
+Status: **PASS on GTX 560 / CUDA 8 / Fermi**.
+
+G34 validates the complete single-token single-head attention pipeline as a
+real GGML graph dispatched through the CUDA8 backend. This is the most complex
+test in the suite: 11 ops, 7 op types, 19 tensors, 3 quantized projections,
+and Q/K/V fan-out from a shared normalized input.
+
+Validated G34 checkpoints:
+
+- **G34A**: full attention pipeline smoke test passes:
+  - 11 graph nodes, 8 leaf tensors, 19 total tensors
+  - vocab=32, embd=128, proj=64, token_id=5
+  - max_err = 6.332994e-08 (tolerance 1e-3)
+  - softmax_sum = 0.999999940 (tolerance 1e-4 from 1.0)
+  - ggml graph optimizer reordered Q/K/V projections for efficiency;
+    backend handled reordering correctly via src[] pointer chasing
+
+- **G34B**: main regression and README status refreshed for G34A.
+
+Validated G34A pipeline:
+
+    token_id [I32]
+      |
+    1. GET_ROWS(embed[32x128])     -> x [128]        (embedding lookup)
+    2. RMS_NORM(x, eps=1e-5)       -> norm [128]     (layer normalization)
+    3. MUL(norm, w_norm)           -> x_n [128]      (element-wise weight scaling)
+      |
+      +-- 4. MUL_MAT(W_q[64x128], x_n) -> q [64]   (Q projection, Q8_0)
+      +-- 5. MUL_MAT(W_k[64x128], x_n) -> k [64]   (K projection, Q8_0)
+      +-- 6. MUL_MAT(W_v[64x128], x_n) -> v [64]   (V projection, Q8_0)
+           |
+    7. MUL(q, 1/sqrt(64))         -> q_s [64]       (attention scaling)
+    8. ADD(q_s, k)                 -> scores [64]    (Q+K interaction)
+    9. SOFTMAX(scores)             -> probs [64]     (attention probabilities)
+   10. MUL(probs, v)              -> attn [64]       (weighted value)
+   11. ADD(attn, bias)            -> out [64]        (output)
+
+Op types exercised:
+- GET_ROWS_F32:          embedding lookup (G33)
+- RMS_NORM_F32:          layer normalization (G25)
+- MUL_F32:               element-wise multiply x3 (G26)
+- MUL_MAT_Q8_0xF32_VEC: quantized projection x3 (G17)
+- MUL_SCALAR_F32:        attention scaling (G13)
+- ADD_F32:               residual/bias x2 (G12)
+- SOFTMAX_ROWS_F32:      attention probabilities (G15)
+
+Notes:
+- This is the first test with Q/K/V fan-out: three MUL_MAT ops sharing
+  the same input tensor (x_n). The ggml graph optimizer reorders the
+  projections for efficiency; our backend handles this correctly because
+  each op reads from its src[] pointers regardless of execution order.
+- 19 device-resident tensors managed in a single 112KB buffer.
+- Mixed precision throughout: I32 token IDs, Q8_0 weight matrices, F32 activations.
+- G34B focused regression passes:
+  - full attention pipeline smoke (11-op),
+  - full transformer block pipeline smoke (6-op),
+  - standalone GET_ROWS kernel smoke,
+  - standalone DIAG_MASK_INF kernel smoke,
+  - CONT -> ADD graph-builder pipeline smoke,
+  - RESHAPE no-op graph-builder pipeline smoke,
+  - ROPE standalone kernel smoke,
+  - RMS_NORM -> MUL graph-builder pipeline smoke,
+  - standalone RMS_NORM kernel smoke,
+  - standalone element-wise MUL kernel smoke,
+  - Q8_0 pipelines, graph-builder attention-like smoke,
+  - dispatch-all CUDA8 kernel smoke.
+<!-- G34_STATUS_END -->
+
+
 
 
 
