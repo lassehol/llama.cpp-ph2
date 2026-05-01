@@ -834,6 +834,56 @@ Notes:
   - dispatch-all CUDA8 kernel smoke.
 <!-- G28_STATUS_END -->
 
+<!-- G29_STATUS_START -->
+## G29 status: RESHAPE/VIEW/PERMUTE/TRANSPOSE no-op support
+
+Status: **PASS on GTX 560 / CUDA 8 / Fermi**.
+
+G29 adds no-op support for metadata-only tensor operations: RESHAPE, VIEW,
+PERMUTE, and TRANSPOSE. These ops do not perform any computation -- they only
+change how existing data is interpreted (shape, strides, offsets). The graph_compute
+loop simply skips them, matching the behavior of the upstream CUDA backend.
+
+Validated G29 checkpoints:
+
+- **G29A**: RESHAPE no-op graph-builder smoke test passes:
+  - Graph: x -> reshape_2d(256,2) -> reshape_1d(512) -> add(bias) -> y
+  - 3 graph nodes: RESHAPE(skip) -> RESHAPE(skip) -> ADD(dispatch)
+  - max_err = 0.000000e+00
+  - Validates that reshape nodes are skipped and data aliasing works correctly
+
+- **G29B**: main regression and README status refreshed for G29A.
+
+Implementation:
+- No new kernels or dispatch ops required
+- Single patch to ggml-cuda8-ggml-backend.cpp graph_compute loop:
+  nodes with op RESHAPE/VIEW/PERMUTE/TRANSPOSE are skipped alongside GGML_OP_NONE
+- Matches upstream ggml-cuda behavior (these ops are no-ops in graph execution)
+
+Skipped ops in graph_compute:
+- GGML_OP_NONE
+- GGML_OP_RESHAPE (G29A)
+- GGML_OP_VIEW (G29A)
+- GGML_OP_PERMUTE (G29A)
+- GGML_OP_TRANSPOSE (G29A)
+
+Notes:
+- These ops are essential for multi-head attention reshaping in LLaMA:
+  [seq_len, n_embd] -> [seq_len, n_heads, head_dim] -> permute for QKV
+- The tensor data pointer aliases the source -- no copy, no kernel launch.
+- G29B focused regression passes:
+  - RESHAPE no-op graph-builder pipeline smoke,
+  - ROPE standalone kernel smoke,
+  - RMS_NORM -> MUL graph-builder pipeline smoke,
+  - standalone RMS_NORM kernel smoke,
+  - standalone element-wise MUL kernel smoke,
+  - Q8_0 MUL_MAT -> MUL_SCALAR -> residual ADD -> SOFTMAX -> SUM_ROWS pipeline smoke,
+  - packed Q8_0 graph-builder MMV smoke,
+  - real graph-builder attention-like G16D smoke,
+  - dispatch-all CUDA8 kernel smoke.
+<!-- G29_STATUS_END -->
+
+
 
 
 

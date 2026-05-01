@@ -1231,3 +1231,36 @@ target_link_libraries(ggml-cuda8-rope-smoke ${CUDA_LIBRARIES})
 set_target_properties(ggml-cuda8-rope-smoke PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
+# -- G29A: RESHAPE/VIEW/PERMUTE no-op graph-builder smoke ---------------------
+cuda_add_executable(ggml-cuda8-ggml-backend-graph-builder-reshape-smoke
+    ../ggml.c
+    ../ggml-quants.c
+    ../ggml-threading.cpp
+    ggml-cuda8-ggml-backend-graph-builder-reshape-smoke.cpp
+)
+
+target_include_directories(ggml-cuda8-ggml-backend-graph-builder-reshape-smoke PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+)
+
+target_compile_definitions(ggml-cuda8-ggml-backend-graph-builder-reshape-smoke PRIVATE
+    GGML_VERSION="${GGML_VERSION}"
+    GGML_COMMIT="${GGML_COMMIT}"
+)
+
+target_compile_options(ggml-cuda8-ggml-backend-graph-builder-reshape-smoke PRIVATE
+    $<$<COMPILE_LANGUAGE:C>:-ffunction-sections>
+    $<$<COMPILE_LANGUAGE:C>:-fdata-sections>
+    $<$<COMPILE_LANGUAGE:CXX>:-ffunction-sections>
+    $<$<COMPILE_LANGUAGE:CXX>:-fdata-sections>
+)
+
+set_property(TARGET ggml-cuda8-ggml-backend-graph-builder-reshape-smoke
+    APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--gc-sections")
+
+target_link_libraries(ggml-cuda8-ggml-backend-graph-builder-reshape-smoke
+    ggml-cuda8-kernels
+    ${CUDA_LIBRARIES}
+)
+

@@ -111,7 +111,11 @@ static enum ggml_status cuda8_backend_graph_compute(ggml_backend_t backend, stru
 
     for (int i = 0; i < cgraph->n_nodes; ++i) {
         struct ggml_tensor * node = cgraph->nodes[i];
-        if (node == NULL || node->op == GGML_OP_NONE) {
+        if (node == NULL || node->op == GGML_OP_NONE ||
+            node->op == GGML_OP_RESHAPE ||
+            node->op == GGML_OP_VIEW ||
+            node->op == GGML_OP_PERMUTE ||
+            node->op == GGML_OP_TRANSPOSE) {
             continue;
         }
 
