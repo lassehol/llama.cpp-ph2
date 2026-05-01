@@ -53,6 +53,7 @@ const char * ggml_cuda8_op_name(int op_id) {
         case GGML_CUDA8_OP_RMS_NORM_F32:        return "RMS_NORM_F32";
         case GGML_CUDA8_OP_MUL_F32:              return "MUL_F32";
         case GGML_CUDA8_OP_ROPE_F32:             return "ROPE_F32";
+        case GGML_CUDA8_OP_CONT_F32:             return "CONT_F32";
         default:                                  return "UNKNOWN";
     }
 }
@@ -280,6 +281,35 @@ static int ggml_cuda8_exec_rope_f32(
         n_dims, freq_base, freq_scale);
 }
 
+
+// -- G30A: CONT_F32 helpers ---------------------------------------------------
+extern "C" int ggml_cuda8_cpy_f32_d2d(
+        const float * src, float * dst, size_t n_bytes);
+
+static int ggml_cuda8_supported_cont_f32(
+        const struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * dst) {
+    (void) ctx;
+    if (src0 == NULL || dst == NULL) return 0;
+    if (src0->type != GGML_TYPE_F32) return 0;
+    if (dst->type  != GGML_TYPE_F32) return 0;
+    return 1;
+}
+
+static int ggml_cuda8_exec_cont_f32(
+        struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        struct ggml_tensor * dst) {
+    (void) ctx;
+    const int n = (int)(src0->ne[0] * src0->ne[1] * src0->ne[2] * src0->ne[3]);
+    const size_t bytes = (size_t)n * sizeof(float);
+    return ggml_cuda8_cpy_f32_d2d(
+        (const float *) src0->data,
+        (float *)       dst->data,
+        bytes);
+}
+
 int ggml_cuda8_dispatch_supported(
     const struct ggml_cuda8_context * ctx,
     int op_id,
@@ -321,6 +351,9 @@ int ggml_cuda8_dispatch_supported(
 
         case GGML_CUDA8_OP_ROPE_F32:
             return ggml_cuda8_supported_rope_f32(ctx, src0, src1, dst);
+
+        case GGML_CUDA8_OP_CONT_F32:
+            return ggml_cuda8_supported_cont_f32(ctx, src0, dst);
 
 
         default:
@@ -379,6 +412,9 @@ int ggml_cuda8_dispatch_execute(
 
         case GGML_CUDA8_OP_ROPE_F32:
             return ggml_cuda8_exec_rope_f32(ctx, src0, src1, dst);
+
+        case GGML_CUDA8_OP_CONT_F32:
+            return ggml_cuda8_exec_cont_f32(ctx, src0, dst);
 
 
         default:

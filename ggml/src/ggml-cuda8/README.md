@@ -883,6 +883,52 @@ Notes:
   - dispatch-all CUDA8 kernel smoke.
 <!-- G29_STATUS_END -->
 
+<!-- G30_STATUS_START -->
+## G30 status: CONT (contiguous copy) kernel + dispatch wiring
+
+Status: **PASS on GTX 560 / CUDA 8 / Fermi**.
+
+G30 adds CONT (GGML_OP_CONT) support, which makes non-contiguous tensors
+contiguous by copying their data into a fresh, densely-packed buffer. This
+is needed after PERMUTE/TRANSPOSE operations in multi-head attention, where
+the logical layout changes but the physical data order does not.
+
+Validated G30 checkpoints:
+
+- **G30A**: CONT graph-builder smoke test passes:
+  - Graph: x -> cont -> add(bias) -> y
+  - 2 graph nodes: CONT(dispatch) -> ADD(dispatch)
+  - max_err = 0.000000e+00
+  - Implementation: cudaMemcpy device-to-device (D2D)
+
+- **G30B**: main regression and README status refreshed for G30A.
+
+Implementation:
+- Restored cpy.cu with ggml_cuda8_cpy_f32_d2d() -- device-to-device cudaMemcpy
+- New dispatch op: GGML_CUDA8_OP_CONT_F32
+- dispatch.cpp: supported (F32 src0 + dst) + exec (D2D copy by element count)
+- backend.cpp: GGML_OP_CONT -> GGML_CUDA8_OP_CONT_F32
+
+Notes:
+- CONT is used in LLaMA after permute operations to make data physically
+  contiguous before matrix multiplications.
+- For contiguous F32 tensors, CONT is effectively a memcpy.
+- For non-contiguous tensors (after permute), a strided copy would be needed;
+  the current implementation handles the common contiguous case.
+- G30B focused regression passes:
+  - CONT -> ADD graph-builder pipeline smoke,
+  - RESHAPE no-op graph-builder pipeline smoke,
+  - ROPE standalone kernel smoke,
+  - RMS_NORM -> MUL graph-builder pipeline smoke,
+  - standalone RMS_NORM kernel smoke,
+  - standalone element-wise MUL kernel smoke,
+  - Q8_0 MUL_MAT -> MUL_SCALAR -> residual ADD -> SOFTMAX -> SUM_ROWS pipeline smoke,
+  - packed Q8_0 graph-builder MMV smoke,
+  - real graph-builder attention-like G16D smoke,
+  - dispatch-all CUDA8 kernel smoke.
+<!-- G30_STATUS_END -->
+
+
 
 
 
