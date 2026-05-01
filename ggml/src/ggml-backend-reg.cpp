@@ -30,6 +30,10 @@
 #include "ggml-cpu.h"
 #endif
 
+#ifdef GGML_USE_CUDA8
+extern "C" ggml_backend_reg_t ggml_backend_cuda8_reg(void);
+#endif
+
 #ifdef GGML_USE_CUDA
 #include "ggml-cuda.h"
 #endif
@@ -115,6 +119,10 @@ struct ggml_backend_registry {
     ggml_backend_registry() {
 #ifdef GGML_USE_CUDA
         register_backend(ggml_backend_cuda_reg());
+#ifdef GGML_USE_CUDA8
+        register_backend(ggml_backend_cuda8_reg());
+#endif
+
 #endif
 #ifdef GGML_USE_METAL
         register_backend(ggml_backend_metal_reg());

@@ -55,6 +55,7 @@ cuda_add_library(ggml-cuda8-kernels STATIC
     ggml-cuda8-ggml-buffer.cpp
     ggml-cuda8-ggml-buffer-registry.cpp
     ggml-cuda8-ggml-backend.cpp
+    ggml-cuda8-backend-reg.cpp
     ggml-cuda8-cpy.cpp
     ggml-cuda8-add.cpp
     ggml-cuda8-add.cu
@@ -71,6 +72,9 @@ cuda_add_library(ggml-cuda8-kernels STATIC
     ggml-cuda8-diagmask.cu
     ggml-cuda8-getrows.cu
 )
+
+# G36A: Define GGML_USE_CUDA8 for backend registration
+target_compile_definitions(ggml-cuda8-kernels PUBLIC GGML_USE_CUDA8)
 
 target_link_libraries(ggml-cuda8-kernels
     ${CUDA_LIBRARIES}
