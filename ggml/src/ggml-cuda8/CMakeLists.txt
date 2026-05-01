@@ -72,6 +72,7 @@ cuda_add_library(ggml-cuda8-kernels STATIC
     ggml-cuda8-diagmask.cu
     ggml-cuda8-getrows.cu
 )
+set_target_properties(ggml-cuda8-kernels PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 # G36A: Define GGML_USE_CUDA8 for backend registration
 target_compile_definitions(ggml-cuda8-kernels PUBLIC GGML_USE_CUDA8)

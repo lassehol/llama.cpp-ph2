@@ -513,3 +513,10 @@ if (GGML_CUDA8)
     message(STATUS "GGML CUDA8: enabling legacy CUDA8/Fermi backend experiment")
     add_subdirectory(ggml-cuda8)
 endif()
+
+# Host-side CUDA8: import pre-built kernel library (no nvcc needed)
+option(GGML_CUDA8_HOST "Import pre-built CUDA8/Fermi kernel library for host linking" OFF)
+
+if (GGML_CUDA8_HOST)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/ggml-cuda8-host.cmake)
+endif()
