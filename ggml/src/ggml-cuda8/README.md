@@ -1291,6 +1291,74 @@ Complete CUDA8 backend op inventory (G11-G35, 15 dispatch ops + 4 no-ops):
   - dispatch-all CUDA8 kernel smoke.
 <!-- G35_STATUS_END -->
 
+<!-- G36_STATUS_START -->
+## G36 status: backend auto-registration into ggml backend registry
+
+Status: **PASS on GTX 560 / CUDA 8 / Fermi**.
+
+G36 wires the CUDA8 backend into ggml's backend registry system, enabling
+automatic discovery by llama.cpp and other ggml-based tools. When GGML_USE_CUDA8
+is defined, the backend registers itself alongside the standard CUDA backend.
+
+Validated G36 checkpoints:
+
+- **G36A**: backend auto-registration compiles and links:
+  - ggml_backend_cuda8_reg() entry point
+  - Full ggml_backend_device_i implementation
+  - supports_op for all 15 dispatch ops with type checking
+  - Device filter: compute capability 2.x-3.x only (Fermi/Kepler)
+  - Full regression passes (no regressions from registration code)
+
+- **G36B**: main regression and README status refreshed for G36A.
+
+Implementation:
+
+  ggml_backend_reg_t ggml_backend_cuda8_reg()
+    |
+    +-- ggml_backend_reg_i:
+    |     get_name()          -> "CUDA8"
+    |     get_device_count()  -> N (Fermi/Kepler devices)
+    |     get_device()        -> device by index
+    |     get_proc_address()  -> NULL (no extensions)
+    |
+    +-- ggml_backend_device_i (per device):
+          get_name()          -> "CUDA8_0"
+          get_description()   -> "GeForce GTX 560" (from cudaDeviceProp)
+          get_memory()        -> cudaMemGetInfo
+          get_type()          -> GGML_BACKEND_DEVICE_TYPE_GPU
+          init_backend()      -> ggml_cuda8_ggml_backend_init(device)
+          get_buffer_type()   -> ggml_cuda8_ggml_buffer_type()
+          supports_op()       -> checks all 15 dispatch ops + 4 no-ops
+          supports_buft()     -> accepts CUDA8 buffer type
+          offload_op()        -> true (offload everything)
+
+  supports_op coverage:
+    - GGML_OP_NONE, RESHAPE, VIEW, PERMUTE, TRANSPOSE (no-ops)
+    - GGML_OP_ADD (F32)
+    - GGML_OP_MUL (F32 element-wise + scalar)
+    - GGML_OP_SOFT_MAX (F32)
+    - GGML_OP_SUM_ROWS (F32)
+    - GGML_OP_MUL_MAT (Q8_0 x F32)
+    - GGML_OP_RMS_NORM (F32, eps from op_params)
+    - GGML_OP_ROPE (F32, mode=0, ext_factor=0 only)
+    - GGML_OP_CONT (F32)
+    - GGML_OP_DIAG_MASK_INF (F32)
+    - GGML_OP_GET_ROWS (F32 src0 + I32 src1)
+
+Files:
+- ggml-cuda8-backend-reg.cpp (new) - device + registry implementation
+- ggml-backend-reg.cpp (patched) - #ifdef GGML_USE_CUDA8 registration
+- CMakeLists.txt (patched) - GGML_USE_CUDA8 define + source
+
+Notes:
+- Device filter only registers compute capability 2.x-3.x (Fermi/Kepler).
+  Modern GPUs (cc >= 4.0) are handled by the standard CUDA backend.
+- No async/events support (Fermi limitation).
+- No host buffer or buffer_from_host_ptr (keeps it simple).
+- This is the first step toward running real GGUF model inference on Fermi.
+<!-- G36_STATUS_END -->
+
+
 
 
 
