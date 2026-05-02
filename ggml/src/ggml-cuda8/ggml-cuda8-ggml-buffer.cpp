@@ -289,3 +289,8 @@ extern "C" int ggml_cuda8_ggml_buffer_is_cuda8(ggml_backend_buffer_t buffer) {
     if (buffer == NULL) return 0;
     return buffer->buft == ggml_cuda8_ggml_buffer_type();
 }
+
+// G36: Set the device pointer on the buffer type (called from backend-reg.cpp)
+extern "C" void ggml_cuda8_ggml_buffer_type_set_device(ggml_backend_dev_t dev) {
+    cuda8_buft.device = dev;
+}

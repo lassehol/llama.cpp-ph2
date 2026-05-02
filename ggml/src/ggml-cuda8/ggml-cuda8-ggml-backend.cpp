@@ -184,6 +184,13 @@ static enum ggml_status cuda8_backend_graph_compute(ggml_backend_t backend, stru
                     dispatch_src1 = &src1_flat;
                     cuda8_op = GGML_CUDA8_OP_MUL_F32;
                     opname = "MUL_F32";
+                } else if (src1->ne[0] == src0->ne[0]) {
+                    // G37: broadcast MUL path (src1 repeats along higher dims)
+                    dispatch_src0 = src0;
+                    dispatch_src1 = src1;
+                    dispatch_dst  = node;
+                    cuda8_op = GGML_CUDA8_OP_MUL_BROADCAST_F32;
+                    opname = "MUL_BROADCAST_F32";
                 } else {
                     std::fprintf(stderr,
                         "ggml-cuda8/backend graph_compute: MUL node %d unsupported shape\n", i);

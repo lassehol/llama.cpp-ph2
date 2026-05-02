@@ -82,7 +82,11 @@ static ggml_backend_t ggml_backend_cuda8_device_init_backend(ggml_backend_dev_t 
     (void) params;
     ggml_backend_cuda8_device_context * ctx =
         (ggml_backend_cuda8_device_context *) dev->context;
-    return ggml_cuda8_ggml_backend_init(ctx->device);
+    ggml_backend_t backend = ggml_cuda8_ggml_backend_init(ctx->device);
+    if (backend) {
+        backend->device = dev;
+    }
+    return backend;
 }
 
 static ggml_backend_buffer_type_t ggml_backend_cuda8_device_get_buffer_type(ggml_backend_dev_t dev) {
@@ -246,6 +250,7 @@ static const ggml_backend_reg_i ggml_backend_cuda8_reg_interface = {
 
 // -- public entry point -------------------------------------------------------
 
+extern "C" void ggml_cuda8_ggml_buffer_type_set_device(ggml_backend_dev_t dev);
 extern "C" ggml_backend_reg_t ggml_backend_cuda8_reg() {
     static ggml_backend_reg reg;
     static bool initialized = false;
@@ -286,6 +291,8 @@ extern "C" ggml_backend_reg_t ggml_backend_cuda8_reg() {
                 /* .reg     = */ &reg,
                 /* .context = */ dev_ctx,
             };
+            // Set device pointer on buffer type so ggml can find our device
+            ggml_cuda8_ggml_buffer_type_set_device(dev);
             ctx->devices.push_back(dev);
         }
 

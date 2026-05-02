@@ -52,6 +52,7 @@ const char * ggml_cuda8_op_name(int op_id) {
         case GGML_CUDA8_OP_SOFTMAX_ROWS_F32:     return "SOFTMAX_ROWS_F32";
         case GGML_CUDA8_OP_RMS_NORM_F32:        return "RMS_NORM_F32";
         case GGML_CUDA8_OP_MUL_F32:              return "MUL_F32";
+        case GGML_CUDA8_OP_MUL_BROADCAST_F32: return "MUL_BROADCAST_F32";
         case GGML_CUDA8_OP_ROPE_F32:             return "ROPE_F32";
         case GGML_CUDA8_OP_CONT_F32:             return "CONT_F32";
         case GGML_CUDA8_OP_DIAG_MASK_INF_F32:  return "DIAG_MASK_INF_F32";
@@ -80,22 +81,15 @@ static int supported_mul_mat_q8_0_f32_vec(
     if (cols <= 0 || rows <= 0) return 0;
     if ((cols % GGML_CUDA8_QK8_0) != 0) return 0;
 
+    // src1 must have matching cols; allow multi-token (ne[1] >= 1)
     if (src1->ne[0] != cols) return 0;
-    if (src1->ne[1] != 1)    return 0;
 
-    if (dst->ne[0] != rows)  return 0;
-    if (dst->ne[1] != 1)     return 0;
+    // dst rows must match weight matrix rows
+    if (dst->ne[0] != rows) return 0;
 
+    // Basic stride sanity
     if (src1->nb[0] != sizeof(float)) return 0;
     if (dst->nb[0]  != sizeof(float)) return 0;
-
-    const int blocks_per_row =
-        (int) ((cols + GGML_CUDA8_QK8_0 - 1) / GGML_CUDA8_QK8_0);
-
-    const size_t block_sz = sizeof(ggml_cuda8_q8_0_block);
-
-    if (src0->nb[0] != block_sz) return 0;
-    if (src0->nb[1] != (size_t) blocks_per_row * block_sz) return 0;
 
     return 1;
 }
@@ -106,8 +100,9 @@ static int exec_mul_mat_q8_0_f32_vec(
     const struct ggml_tensor * src1,
     struct ggml_tensor * dst
 ) {
-    const int rows = (int) src0->ne[1];
-    const int cols = (int) src0->ne[0];
+    const int rows = (int) src0->ne[1];   // output features
+    const int cols = (int) src0->ne[0];   // input features
+    const int n_tokens = (int) src1->ne[1]; // batch size (1 for single token)
 
     const int blocks_per_row =
         (cols + GGML_CUDA8_QK8_0 - 1) / GGML_CUDA8_QK8_0;
@@ -115,12 +110,13 @@ static int exec_mul_mat_q8_0_f32_vec(
     const size_t bytes_src0 =
         (size_t) rows * (size_t) blocks_per_row * sizeof(ggml_cuda8_q8_0_block);
 
-    const size_t bytes_src1 =
+    const size_t bytes_vec =
         (size_t) cols * sizeof(float);
 
-    const size_t bytes_dst =
+    const size_t bytes_out =
         (size_t) rows * sizeof(float);
 
+    // Weight matrix: upload once (or use device-resident pointer directly)
     ggml_cuda8_backend_buffer * b0 = NULL;
     ggml_cuda8_backend_buffer * b1 = NULL;
     ggml_cuda8_backend_buffer * bd = NULL;
@@ -128,30 +124,36 @@ static int exec_mul_mat_q8_0_f32_vec(
     int rc = 0;
 
     if (ggml_cuda8_context_alloc_buffer(ctx, bytes_src0, &b0) != 0) return -1;
-
-    if (ggml_cuda8_context_alloc_buffer(ctx, bytes_src1, &b1) != 0) {
+    if (ggml_cuda8_context_alloc_buffer(ctx, bytes_vec, &b1) != 0) {
         ggml_cuda8_backend_buffer_free(b0);
         return -1;
     }
-
-    if (ggml_cuda8_context_alloc_buffer(ctx, bytes_dst, &bd) != 0) {
+    if (ggml_cuda8_context_alloc_buffer(ctx, bytes_out, &bd) != 0) {
         ggml_cuda8_backend_buffer_free(b0);
         ggml_cuda8_backend_buffer_free(b1);
         return -1;
     }
 
-    if (ggml_cuda8_backend_buffer_upload(b0, 0, src0->data, bytes_src0) != 0) rc = -1;
-    if (rc == 0 && ggml_cuda8_backend_buffer_upload(b1, 0, src1->data, bytes_src1) != 0) rc = -1;
-    if (rc == 0 && ggml_cuda8_backend_buffer_clear(bd, 0) != 0) rc = -1;
-
-    if (rc == 0) {
-        rc = ggml_cuda8_context_mul_mat_q8_0_f32(ctx, b0, b1, bd, rows, cols);
+    // Upload weight matrix once
+    if (ggml_cuda8_backend_buffer_upload(b0, 0, src0->data, bytes_src0) != 0) {
+        ggml_cuda8_backend_buffer_free(b0);
+        ggml_cuda8_backend_buffer_free(b1);
+        ggml_cuda8_backend_buffer_free(bd);
+        return -1;
     }
 
-    if (rc == 0) {
-        if (ggml_cuda8_backend_buffer_download(bd, 0, dst->data, bytes_dst) != 0) {
-            rc = -1;
-        }
+    // Process each token vector
+    for (int t = 0; t < n_tokens && rc == 0; ++t) {
+        const char * src1_ptr = (const char *) src1->data + (size_t) t * bytes_vec;
+        char * dst_ptr = (char *) dst->data + (size_t) t * bytes_out;
+
+        if (ggml_cuda8_backend_buffer_upload(b1, 0, src1_ptr, bytes_vec) != 0) { rc = -1; break; }
+        if (ggml_cuda8_backend_buffer_clear(bd, 0) != 0) { rc = -1; break; }
+
+        rc = ggml_cuda8_context_mul_mat_q8_0_f32(ctx, b0, b1, bd, rows, cols);
+        if (rc != 0) break;
+
+        if (ggml_cuda8_backend_buffer_download(bd, 0, dst_ptr, bytes_out) != 0) { rc = -1; break; }
     }
 
     ggml_cuda8_backend_buffer_free(b0);
@@ -197,6 +199,9 @@ static int ggml_cuda8_exec_rms_norm_f32(
 // -- G26A: MUL_F32 element-wise helpers ---------------------------------------
 extern "C" int ggml_cuda8_mul_f32_launch(
         const float * a, const float * b, float * c, int n);
+
+extern "C" int ggml_cuda8_mul_broadcast_f32_launch(
+        const float * a, const float * b, float * c, int n_total, int n_repeat);
 
 static int ggml_cuda8_supported_mul_f32(
         const struct ggml_cuda8_context * ctx,
@@ -419,6 +424,8 @@ int ggml_cuda8_dispatch_supported(
             return ggml_cuda8_supported_rms_norm_f32(ctx, src0, dst);
 
         case GGML_CUDA8_OP_MUL_F32:
+
+        case GGML_CUDA8_OP_MUL_BROADCAST_F32:
             return ggml_cuda8_supported_mul_f32(ctx, src0, src1, dst);
 
         case GGML_CUDA8_OP_ROPE_F32:
@@ -487,6 +494,16 @@ int ggml_cuda8_dispatch_execute(
 
         case GGML_CUDA8_OP_MUL_F32:
             return ggml_cuda8_exec_mul_f32(ctx, src0, src1, dst);
+
+        case GGML_CUDA8_OP_MUL_BROADCAST_F32: {
+            const int n_total = (int)(src0->ne[0] * src0->ne[1] * src0->ne[2] * src0->ne[3]);
+            const int n_repeat = (int)(src1->ne[0] * src1->ne[1] * src1->ne[2] * src1->ne[3]);
+            return ggml_cuda8_mul_broadcast_f32_launch(
+                (const float *) src0->data,
+                (const float *) src1->data,
+                (float *)       dst->data,
+                n_total, n_repeat);
+        }
 
         case GGML_CUDA8_OP_ROPE_F32:
             return ggml_cuda8_exec_rope_f32(ctx, src0, src1, dst);
