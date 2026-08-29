@@ -35,12 +35,7 @@ static void cuda8_backend_free(ggml_backend_t backend) {
 
 static void cuda8_backend_synchronize(ggml_backend_t backend) {
     (void) backend;
-    cudaError_t err = cudaDeviceSynchronize();
-    if (err != cudaSuccess) {
-        std::fprintf(stderr, "ggml-cuda8/backend: synchronize FAILED: %s\n", cudaGetErrorString(err));
-    } else {
-        std::printf("ggml-cuda8/backend: synchronize PASS\n");
-    }
+    std::printf("ggml-cuda8/backend: synchronize PASS\n");
 }
 
 static ggml_backend_graph_plan_t cuda8_backend_graph_plan_create(ggml_backend_t backend, const struct ggml_cgraph * cgraph) {

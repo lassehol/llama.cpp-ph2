@@ -22,6 +22,16 @@
 
 #include <cstdio>
 
+// Forward declarations for K-quant dispatch functions
+static int supported_mul_mat_q4k_f32(const struct ggml_cuda8_context*, const struct ggml_tensor*, const struct ggml_tensor*, const struct ggml_tensor*);
+static int supported_mul_mat_q6k_f32(const struct ggml_cuda8_context*, const struct ggml_tensor*, const struct ggml_tensor*, const struct ggml_tensor*);
+static int supported_get_rows_q4k(const struct ggml_cuda8_context*, const struct ggml_tensor*, const struct ggml_tensor*, const struct ggml_tensor*);
+static int supported_get_rows_q6k(const struct ggml_cuda8_context*, const struct ggml_tensor*, const struct ggml_tensor*, const struct ggml_tensor*);
+static int exec_mul_mat_q4k_f32(struct ggml_cuda8_context*, const struct ggml_tensor*, const struct ggml_tensor*, struct ggml_tensor*);
+static int exec_mul_mat_q6k_f32(struct ggml_cuda8_context*, const struct ggml_tensor*, const struct ggml_tensor*, struct ggml_tensor*);
+static int exec_get_rows_q4k(struct ggml_cuda8_context*, const struct ggml_tensor*, const struct ggml_tensor*, struct ggml_tensor*);
+static int exec_get_rows_q6k(struct ggml_cuda8_context*, const struct ggml_tensor*, const struct ggml_tensor*, struct ggml_tensor*);
+
 static int check_tensor_ptrs(
     const struct ggml_tensor * a,
     const struct ggml_tensor * b,
@@ -57,6 +67,10 @@ const char * ggml_cuda8_op_name(int op_id) {
         case GGML_CUDA8_OP_CONT_F32:             return "CONT_F32";
         case GGML_CUDA8_OP_DIAG_MASK_INF_F32:  return "DIAG_MASK_INF_F32";
         case GGML_CUDA8_OP_GET_ROWS_F32:       return "GET_ROWS_F32";
+        case GGML_CUDA8_OP_MUL_MAT_Q4_K_F32: return "MUL_MAT_Q4_KxF32";
+        case GGML_CUDA8_OP_MUL_MAT_Q6_K_F32: return "MUL_MAT_Q6_KxF32";
+        case GGML_CUDA8_OP_GET_ROWS_Q4_K:    return "GET_ROWS_Q4_K";
+        case GGML_CUDA8_OP_GET_ROWS_Q6_K:    return "GET_ROWS_Q6_K";
         default:                                  return "UNKNOWN";
     }
 }
@@ -440,6 +454,14 @@ int ggml_cuda8_dispatch_supported(
         case GGML_CUDA8_OP_GET_ROWS_F32:
             return ggml_cuda8_supported_get_rows_f32(ctx, src0, src1, dst);
 
+        case GGML_CUDA8_OP_MUL_MAT_Q4_K_F32:
+            return supported_mul_mat_q4k_f32(ctx, src0, src1, dst);
+        case GGML_CUDA8_OP_MUL_MAT_Q6_K_F32:
+            return supported_mul_mat_q6k_f32(ctx, src0, src1, dst);
+        case GGML_CUDA8_OP_GET_ROWS_Q4_K:
+            return supported_get_rows_q4k(ctx, src0, src1, dst);
+        case GGML_CUDA8_OP_GET_ROWS_Q6_K:
+            return supported_get_rows_q6k(ctx, src0, src1, dst);
 
         default:
             return 0;
@@ -517,8 +539,140 @@ int ggml_cuda8_dispatch_execute(
         case GGML_CUDA8_OP_GET_ROWS_F32:
             return ggml_cuda8_exec_get_rows_f32(ctx, src0, src1, dst);
 
+        case GGML_CUDA8_OP_MUL_MAT_Q4_K_F32:
+            return exec_mul_mat_q4k_f32(ctx, src0, src1, dst);
+        case GGML_CUDA8_OP_MUL_MAT_Q6_K_F32:
+            return exec_mul_mat_q6k_f32(ctx, src0, src1, dst);
+        case GGML_CUDA8_OP_GET_ROWS_Q4_K:
+            return exec_get_rows_q4k(ctx, src0, src1, dst);
+        case GGML_CUDA8_OP_GET_ROWS_Q6_K:
+            return exec_get_rows_q6k(ctx, src0, src1, dst);
+
 
         default:
             return -1;
     }
+}
+
+// -- K-quant: Q4_K and Q6_K support -----------------------------------------
+
+extern "C" int ggml_cuda8_op_get_rows_q4k(const void*, const int*, float*, int, int, int, int);
+extern "C" int ggml_cuda8_op_mul_mat_q4k_f32(const void*, const float*, float*, int, int, int, int, int);
+extern "C" int ggml_cuda8_op_get_rows_q6k(const void*, const int*, float*, int, int, int, int);
+extern "C" int ggml_cuda8_op_mul_mat_q6k_f32(const void*, const float*, float*, int, int, int, int, int);
+
+// Q4_K MUL_MAT supported check
+static int supported_mul_mat_q4k_f32(
+        const struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * src1,
+        const struct ggml_tensor * dst) {
+    (void) ctx;
+    if (!src0 || !src1 || !dst) return 0;
+    if (src0->type != GGML_TYPE_Q4_K) return 0;
+    if (src1->type != GGML_TYPE_F32)  return 0;
+    if (dst->type  != GGML_TYPE_F32)  return 0;
+    if (src0->ne[0] % 256 != 0) return 0;  // QK_K alignment
+    return 1;
+}
+
+// Q6_K MUL_MAT supported check
+static int supported_mul_mat_q6k_f32(
+        const struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * src1,
+        const struct ggml_tensor * dst) {
+    (void) ctx;
+    if (!src0 || !src1 || !dst) return 0;
+    if (src0->type != GGML_TYPE_Q6_K) return 0;
+    if (src1->type != GGML_TYPE_F32)  return 0;
+    if (dst->type  != GGML_TYPE_F32)  return 0;
+    if (src0->ne[0] % 256 != 0) return 0;
+    return 1;
+}
+
+// Q4_K GET_ROWS supported check
+static int supported_get_rows_q4k(
+        const struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * src1,
+        const struct ggml_tensor * dst) {
+    (void) ctx;
+    if (!src0 || !src1 || !dst) return 0;
+    if (src0->type != GGML_TYPE_Q4_K) return 0;
+    if (src1->type != GGML_TYPE_I32)  return 0;
+    if (dst->type  != GGML_TYPE_F32)  return 0;
+    return 1;
+}
+
+// Q6_K GET_ROWS supported check
+static int supported_get_rows_q6k(
+        const struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * src1,
+        const struct ggml_tensor * dst) {
+    (void) ctx;
+    if (!src0 || !src1 || !dst) return 0;
+    if (src0->type != GGML_TYPE_Q6_K) return 0;
+    if (src1->type != GGML_TYPE_I32)  return 0;
+    if (dst->type  != GGML_TYPE_F32)  return 0;
+    return 1;
+}
+
+// Q4_K MUL_MAT execute
+static int exec_mul_mat_q4k_f32(
+        struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * src1,
+        struct ggml_tensor * dst) {
+    (void) ctx;
+    return ggml_cuda8_op_mul_mat_q4k_f32(
+        src0->data, (const float *)src1->data, (float *)dst->data,
+        (int)src0->ne[0], (int)src0->ne[1], (int)src1->ne[1],
+        (int)src0->nb[1], (int)src1->nb[1]);
+}
+
+// Q6_K MUL_MAT execute
+static int exec_mul_mat_q6k_f32(
+        struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * src1,
+        struct ggml_tensor * dst) {
+    (void) ctx;
+    return ggml_cuda8_op_mul_mat_q6k_f32(
+        src0->data, (const float *)src1->data, (float *)dst->data,
+        (int)src0->ne[0], (int)src0->ne[1], (int)src1->ne[1],
+        (int)src0->nb[1], (int)src1->nb[1]);
+}
+
+// Q4_K GET_ROWS execute
+static int exec_get_rows_q4k(
+        struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * src1,
+        struct ggml_tensor * dst) {
+    (void) ctx;
+    int n_tokens = (int)src1->ne[0];
+    int ne00 = (int)src0->ne[0];
+    int nb01 = (int)src0->nb[1];
+    int nb1  = (int)(ne00 * sizeof(float));
+    return ggml_cuda8_op_get_rows_q4k(
+        src0->data, (const int *)src1->data, (float *)dst->data,
+        ne00, n_tokens, nb01, nb1);
+}
+
+// Q6_K GET_ROWS execute
+static int exec_get_rows_q6k(
+        struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * src1,
+        struct ggml_tensor * dst) {
+    (void) ctx;
+    int n_tokens = (int)src1->ne[0];
+    int ne00 = (int)src0->ne[0];
+    int nb01 = (int)src0->nb[1];
+    int nb1  = (int)(ne00 * sizeof(float));
+    return ggml_cuda8_op_get_rows_q6k(
+        src0->data, (const int *)src1->data, (float *)dst->data,
+        ne00, n_tokens, nb01, nb1);
 }

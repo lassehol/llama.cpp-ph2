@@ -115,7 +115,9 @@ static bool ggml_backend_cuda8_device_supports_op(ggml_backend_dev_t dev,
         // F32 element-wise
         case GGML_OP_ADD:
             return (op->type == GGML_TYPE_F32 &&
-                    op->src[0] && op->src[0]->type == GGML_TYPE_F32);
+                    op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                    op->src[1] && op->src[1]->type == GGML_TYPE_F32 &&
+                    ggml_nelements(op) == ggml_nelements(op->src[1]));
 
         // MUL: element-wise F32 or scalar F32
         case GGML_OP_MUL:
@@ -133,10 +135,13 @@ static bool ggml_backend_cuda8_device_supports_op(ggml_backend_dev_t dev,
             return (op->type == GGML_TYPE_F32 &&
                     op->src[0] && op->src[0]->type == GGML_TYPE_F32);
 
-        // Q8_0 x F32 matrix multiply
+        // quantized x F32 matrix multiply (Q8_0, Q4_K, Q6_K)
         case GGML_OP_MUL_MAT:
             return (op->type == GGML_TYPE_F32 &&
-                    op->src[0] && op->src[0]->type == GGML_TYPE_Q8_0 &&
+                    op->src[0] &&
+                    (op->src[0]->type == GGML_TYPE_Q8_0 ||
+                     op->src[0]->type == GGML_TYPE_Q4_K ||
+                     op->src[0]->type == GGML_TYPE_Q6_K) &&
                     op->src[1] && op->src[1]->type == GGML_TYPE_F32);
 
         // RMS normalization
@@ -168,10 +173,13 @@ static bool ggml_backend_cuda8_device_supports_op(ggml_backend_dev_t dev,
             return (op->type == GGML_TYPE_F32 &&
                     op->src[0] && op->src[0]->type == GGML_TYPE_F32);
 
-        // embedding lookup
+        // embedding lookup (F32, Q4_K, Q6_K)
         case GGML_OP_GET_ROWS:
             return (op->type == GGML_TYPE_F32 &&
-                    op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                    op->src[0] &&
+                    (op->src[0]->type == GGML_TYPE_F32 ||
+                     op->src[0]->type == GGML_TYPE_Q4_K ||
+                     op->src[0]->type == GGML_TYPE_Q6_K) &&
                     op->src[1] && op->src[1]->type == GGML_TYPE_I32);
 
         default:
@@ -189,8 +197,19 @@ static bool ggml_backend_cuda8_device_supports_buft(ggml_backend_dev_t dev,
 static bool ggml_backend_cuda8_device_offload_op(ggml_backend_dev_t dev,
                                                    const struct ggml_tensor * op) {
     (void) dev;
-    (void) op;
-    return true;  // offload everything we support
+    // Only offload if the weight tensor (src[0]) is already on our GPU.
+    // This prevents the scheduler from routing CPU-resident layers to CUDA8.
+    switch (op->op) {
+        case GGML_OP_MUL_MAT:
+        case GGML_OP_GET_ROWS:
+            if (op->src[0] && op->src[0]->buffer &&
+                op->src[0]->buffer->buft == ggml_cuda8_ggml_buffer_type()) {
+                return true;
+            }
+            return false;
+        default:
+            return false;
+    }
 }
 
 static const ggml_backend_device_i ggml_backend_cuda8_device_interface = {

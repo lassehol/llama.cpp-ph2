@@ -71,6 +71,8 @@ cuda_add_library(ggml-cuda8-kernels STATIC
     cpy.cu
     ggml-cuda8-diagmask.cu
     ggml-cuda8-getrows.cu
+    ggml-cuda8-q4k.cu
+    ggml-cuda8-q6k.cu
 )
 set_target_properties(ggml-cuda8-kernels PROPERTIES POSITION_INDEPENDENT_CODE ON)
 

@@ -112,7 +112,8 @@ static __global__ void ggml_cuda8_q8_0_mmv_f32_qblock_kernel(
     int cols,
     int blocks_per_row
 ) {
-    const int row = blockIdx.x;
+    // 2D grid for Fermi (max grid.x=65535)
+    const int row = blockIdx.x + blockIdx.y * gridDim.x;
     const int tid = threadIdx.x;
 
     __shared__ float partial[GGML_CUDA8_Q8_0_MMV_BLOCK_SIZE];
@@ -174,7 +175,7 @@ extern "C" int ggml_cuda8_q8_0_mmv_f32_qblock(
     const int blocks_per_row =
         (cols + GGML_CUDA8_QK8_0 - 1) / GGML_CUDA8_QK8_0;
 
-    ggml_cuda8_q8_0_mmv_f32_qblock_kernel<<<rows, GGML_CUDA8_Q8_0_MMV_BLOCK_SIZE>>>(
+    ggml_cuda8_q8_0_mmv_f32_qblock_kernel<<<dim3(rows > 65535 ? 65535 : rows, (rows + 65534) / 65535), GGML_CUDA8_Q8_0_MMV_BLOCK_SIZE>>>(
         d_Aq, d_x, d_y, rows, cols, blocks_per_row
     );
 
@@ -197,7 +198,8 @@ static __global__ void ggml_cuda8_q8_0_mmv_f32_col_parallel_kernel(
     int cols,
     int blocks_per_row
 ) {
-    const int row = blockIdx.x;
+    // 2D grid for Fermi (max grid.x=65535)
+    const int row = blockIdx.x + blockIdx.y * gridDim.x;
     const int tid = threadIdx.x;
 
     __shared__ float partial[GGML_CUDA8_Q8_0_MMV_BLOCK_SIZE];
@@ -253,7 +255,7 @@ extern "C" int ggml_cuda8_q8_0_mmv_f32_col_parallel(
     const int blocks_per_row =
         (cols + GGML_CUDA8_QK8_0 - 1) / GGML_CUDA8_QK8_0;
 
-    ggml_cuda8_q8_0_mmv_f32_col_parallel_kernel<<<rows, GGML_CUDA8_Q8_0_MMV_BLOCK_SIZE>>>(
+    ggml_cuda8_q8_0_mmv_f32_col_parallel_kernel<<<dim3(rows > 65535 ? 65535 : rows, (rows + 65534) / 65535), GGML_CUDA8_Q8_0_MMV_BLOCK_SIZE>>>(
         d_Aq, d_x, d_y, rows, cols, blocks_per_row
     );
 
