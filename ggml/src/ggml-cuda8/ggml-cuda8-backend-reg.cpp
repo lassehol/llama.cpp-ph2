@@ -123,10 +123,15 @@ static bool ggml_backend_cuda8_device_supports_op(ggml_backend_dev_t dev,
                     op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
                     op->src[1] && op->src[1]->type == GGML_TYPE_F32);
 
-        // softmax
+        // softmax: plain row-wise only.
+        // G37: reject the ggml_soft_max_ext() forms (mask / sinks / scale /
+        // max_bias) - the kernel ignores all of them, so claiming those nodes
+        // would silently produce wrong attention weights. See
+        // ggml_cuda8_soft_max_is_plain().
         case GGML_OP_SOFT_MAX:
             return (op->type == GGML_TYPE_F32 &&
-                    op->src[0] && op->src[0]->type == GGML_TYPE_F32);
+                    op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                    ggml_cuda8_soft_max_is_plain(op));
 
         // row reductions
         case GGML_OP_SUM_ROWS:

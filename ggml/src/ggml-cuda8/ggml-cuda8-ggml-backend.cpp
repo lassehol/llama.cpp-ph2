@@ -206,6 +206,19 @@ static enum ggml_status cuda8_backend_graph_compute(ggml_backend_t backend, stru
                     return (enum ggml_status) -1;
                 }
 
+                // G37: the kernel is a plain row-wise softmax. Fail loudly rather
+                // than silently ignoring a mask / sinks / scale / max_bias. This
+                // should be unreachable - supports_op refuses these nodes - so
+                // reaching it means the scheduler bypassed supports_op.
+                if (!ggml_cuda8_soft_max_is_plain(node)) {
+                    std::fprintf(stderr,
+                        "ggml-cuda8/backend graph_compute: SOFT_MAX node %d uses soft_max_ext features "
+                        "(mask=%p sinks=%p scale/max_bias in op_params) that the CUDA8 kernel does not implement\n",
+                        i, (void *) node->src[1], (void *) node->src[2]);
+                    ggml_cuda8_context_destroy(ctx);
+                    return (enum ggml_status) -1;
+                }
+
                 cuda8_op = GGML_CUDA8_OP_SOFTMAX_ROWS_F32;
                 opname = "SOFTMAX_ROWS_F32";
             } break;

@@ -158,9 +158,16 @@ int main(int argc, char ** argv) {
     d.src[0] = &c;
     d.src[1] = &scalar;
 
+    // G37: SOFT_MAX must mirror what ggml_soft_max() emits - src[1] is the mask
+    // slot, not a filler, and op_params is { scale, max_bias }. A dummy in src[1]
+    // or a zeroed op_params block now reads as a soft_max_ext node and is refused.
     s.op = GGML_OP_SOFT_MAX;
     s.src[0] = &d;
-    s.src[1] = &dummy;
+    s.src[1] = NULL;
+    {
+        const float sm_params[2] = { 1.0f, 0.0f };
+        std::memcpy(s.op_params, sm_params, sizeof(sm_params));
+    }
 
     if (buffer->iface.init_tensor(buffer, &a) != GGML_STATUS_SUCCESS ||
         buffer->iface.init_tensor(buffer, &b) != GGML_STATUS_SUCCESS ||
