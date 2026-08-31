@@ -1358,6 +1358,79 @@ Notes:
 - This is the first step toward running real GGUF model inference on Fermi.
 <!-- G36_STATUS_END -->
 
+<!-- G37_STATUS_START -->
+## G37 status: SOFT_MAX soft_max_ext guard (silent wrong-answer fix)
+
+Status: **implemented, NOT yet verified on hardware.** Needs a regression run on the
+GTX 560 before this is marked PASS.
+
+G37 fixes a correctness bug rather than adding capability. `supports_op` claimed any
+F32 `GGML_OP_SOFT_MAX` while the `SOFTMAX_ROWS_F32` kernel implements only a plain
+row-wise softmax. ggml folds four separate things into that same op via
+`ggml_soft_max_ext()`:
+
+    src[1]    - attention mask
+    src[2]    - attention sinks (ggml_soft_max_add_sinks)
+    params[0] - scale    (1/sqrt(head_dim) in real attention)
+    params[1] - max_bias (ALiBi slope)
+
+The kernel takes no mask, has no sink support, and never reads `op_params`. So a real
+attention graph calling `ggml_soft_max_ext(kq, mask, scale, max_bias)` was claimed by
+this backend and computed as an **unmasked, unscaled** softmax: no crash, no fallback,
+just plausible-looking wrong attention weights. Nothing in G15-G36 caught it because
+every existing smoke test uses plain `ggml_soft_max()`.
+
+Validated G37 checkpoints:
+
+- **G37A**: `ggml_cuda8_soft_max_is_plain()` predicate added; `supports_op` and
+  `graph_compute` both gated on it. Predicate verified standalone under `-std=c++11`
+  across 7 cases (plain / zeroed params / mask / sinks / scale / max_bias / NULL).
+- **G37B**: smoke fixtures corrected and rejection cases added.
+- **G37C**: *pending* - full regression on GTX 560.
+
+Implementation:
+
+    ggml-cuda8-ggml-backend.h
+      + ggml_cuda8_soft_max_is_plain(op)   // shared predicate, C++11, header-inline
+          returns 1 only for: src[1]==NULL, src[2]==NULL, scale==1.0f, max_bias==0.0f
+
+    ggml-cuda8-backend-reg.cpp
+        GGML_OP_SOFT_MAX  -> types AND ggml_cuda8_soft_max_is_plain(op)
+          (the gatekeeper: unsupported forms now fall back to CPU)
+
+    ggml-cuda8-ggml-backend.cpp
+        GGML_OP_SOFT_MAX  -> hard error if !ggml_cuda8_soft_max_is_plain(node)
+          (defence in depth: should be unreachable, so reaching it means the
+           scheduler bypassed supports_op - fail loudly rather than miscompute)
+
+Fixture corrections (these were latent bugs in the tests, not regressions):
+
+- `ggml-cuda8-ggml-backend-graph-compute-softmax-smoke.cpp:161`
+- `ggml-cuda8-ggml-backend-graph-compute-attnlike-smoke.cpp:104`
+
+  Both built synthetic SOFT_MAX nodes with `src[1] = &dummy` as filler. `src[1]` is
+  the mask slot, so those nodes were malformed - they described a masked softmax while
+  expecting plain-softmax results. Both now set `src[1] = NULL` and stamp
+  `op_params = { 1.0f, 0.0f }`, matching what `ggml_soft_max()` actually emits.
+
+  Note the general trap: `memset`-based tensor fixtures leave `op_params` zeroed, which
+  reads as `scale = 0.0f` - **not** a plain softmax. Any hand-built SOFT_MAX node has to
+  stamp the params explicitly.
+
+New rejection cases in `ggml-cuda8-ggml-backend-supports-op-smoke.cpp`:
+
+    SOFT_MAX (plain)        -> true
+    SOFT_MAX (mask)         -> false
+    SOFT_MAX (sinks)        -> false
+    SOFT_MAX (scale!=1)     -> false
+    SOFT_MAX (max_bias)     -> false
+    SOFT_MAX (zero params)  -> false
+
+Consequence: real attention softmax now runs on the CPU. That is a graph split and it
+is slower - but it is correct, which the previous behaviour was not. G41 implements
+mask/scale/max_bias properly in the kernel and lifts the restriction.
+<!-- G37_STATUS_END -->
+
 
 
 

@@ -1,12 +1,15 @@
 // ggml-cuda8-ggml-backend-supports-op-smoke.cpp
 // G36C: supports_op integration test for CUDA8 backend
+// G37:  added SOFT_MAX soft_max_ext rejection cases
 //
 // Calls ggml_backend_cuda8_reg() directly (avoids C++17 ggml-backend-reg.cpp).
 // Tests:
 //   1. Registry returns valid backend with devices
 //   2. Device interface works (name, description, memory, type, props)
-//   3. supports_op returns true for all 15 dispatch ops + 4 no-ops
-//   4. supports_op returns false for unsupported ops
+//   3. supports_op returns true for all 15 dispatch ops + 5 no-ops
+//   4. supports_op returns false for unsupported ops, including the
+//      soft_max_ext forms (mask / sinks / scale / max_bias) that would
+//      otherwise be silently miscomputed
 //   5. init_backend from device works
 
 #include "ggml-cuda8-ggml-backend.h"
@@ -22,6 +25,14 @@
 
 // Declared in ggml-cuda8-backend-reg.cpp
 extern "C" ggml_backend_reg_t ggml_backend_cuda8_reg(void);
+
+// G37: stamp SOFT_MAX op_params the way ggml_soft_max_impl() does.
+// Note that a zeroed op_params block is NOT a plain softmax - it reads as
+// scale=0.0f - so every SOFT_MAX fixture has to set this explicitly.
+static void set_soft_max_params(ggml_tensor * t, float scale, float max_bias) {
+    float p[2] = { scale, max_bias };
+    std::memcpy(t->op_params, p, sizeof(p));
+}
 
 // Create a minimal fake tensor for supports_op testing
 static ggml_tensor make_fake(ggml_type type, int64_t ne0, int64_t ne1) {
@@ -157,11 +168,12 @@ int main() {
     op_t.src[1] = &f32_1;
     ok &= test_op(dev, "MUL (scalar F32)", &op_t, true);
 
-    // SOFT_MAX
+    // SOFT_MAX (plain: no mask, no sinks, scale=1, max_bias=0)
     op_t = make_fake(GGML_TYPE_F32, 64, 1);
     op_t.op = GGML_OP_SOFT_MAX;
     op_t.src[0] = &f32_64;
-    ok &= test_op(dev, "SOFT_MAX", &op_t, true);
+    set_soft_max_params(&op_t, 1.0f, 0.0f);
+    ok &= test_op(dev, "SOFT_MAX (plain)", &op_t, true);
 
     // SUM_ROWS
     op_t = make_fake(GGML_TYPE_F32, 1, 64);
@@ -261,6 +273,48 @@ int main() {
         std::memcpy(op_t.op_params, p, sizeof(p));
     }
     ok &= test_op(dev, "ROPE (YaRN ext=1)", &op_t, false);
+
+    // G37: soft_max_ext forms. The SOFTMAX_ROWS_F32 kernel implements none of
+    // these - it takes no mask, no sinks, and never reads op_params. If
+    // supports_op claims them, the result is not a crash but silently wrong
+    // attention weights, so each must be refused and left to the CPU backend.
+
+    // SOFT_MAX with attention mask (src[1])
+    op_t = make_fake(GGML_TYPE_F32, 64, 8);
+    op_t.op = GGML_OP_SOFT_MAX;
+    op_t.src[0] = &f32_2d;
+    op_t.src[1] = &f32_2d;  // mask
+    set_soft_max_params(&op_t, 1.0f, 0.0f);
+    ok &= test_op(dev, "SOFT_MAX (mask)", &op_t, false);
+
+    // SOFT_MAX with attention sinks (src[2])
+    op_t = make_fake(GGML_TYPE_F32, 64, 8);
+    op_t.op = GGML_OP_SOFT_MAX;
+    op_t.src[0] = &f32_2d;
+    op_t.src[2] = &f32_1;  // sinks
+    set_soft_max_params(&op_t, 1.0f, 0.0f);
+    ok &= test_op(dev, "SOFT_MAX (sinks)", &op_t, false);
+
+    // SOFT_MAX with attention scale (1/sqrt(128) - the real-attention case)
+    op_t = make_fake(GGML_TYPE_F32, 64, 1);
+    op_t.op = GGML_OP_SOFT_MAX;
+    op_t.src[0] = &f32_64;
+    set_soft_max_params(&op_t, 0.08838835f, 0.0f);
+    ok &= test_op(dev, "SOFT_MAX (scale!=1)", &op_t, false);
+
+    // SOFT_MAX with ALiBi max_bias
+    op_t = make_fake(GGML_TYPE_F32, 64, 8);
+    op_t.op = GGML_OP_SOFT_MAX;
+    op_t.src[0] = &f32_2d;
+    op_t.src[1] = &f32_2d;  // max_bias > 0 implies a mask
+    set_soft_max_params(&op_t, 1.0f, 8.0f);
+    ok &= test_op(dev, "SOFT_MAX (max_bias)", &op_t, false);
+
+    // SOFT_MAX with zeroed op_params - scale reads as 0.0f, not a plain softmax
+    op_t = make_fake(GGML_TYPE_F32, 64, 1);
+    op_t.op = GGML_OP_SOFT_MAX;
+    op_t.src[0] = &f32_64;
+    ok &= test_op(dev, "SOFT_MAX (zero params)", &op_t, false);
 
     // CPY
     op_t = make_fake(GGML_TYPE_F32, 128, 1);

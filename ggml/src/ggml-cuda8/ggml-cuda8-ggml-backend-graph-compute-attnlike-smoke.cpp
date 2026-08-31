@@ -101,7 +101,11 @@ int main(int argc, char ** argv) {
     setup_f32_scalar(scalar, base_u8 + off_scalar); setup_f32_scalar(dummy, base_u8 + off_dummy);
     scores.op = GGML_OP_ADD; scores.src[0] = &a; scores.src[1] = &b;
     scaled.op = GGML_OP_MUL; scaled.src[0] = &scores; scaled.src[1] = &scalar;
-    probs.op = GGML_OP_SOFT_MAX; probs.src[0] = &scaled; probs.src[1] = &dummy;
+    // G37: SOFT_MAX must mirror what ggml_soft_max() emits - src[1] is the mask
+    // slot, not a filler, and op_params is { scale, max_bias }. A dummy in src[1]
+    // or a zeroed op_params block now reads as a soft_max_ext node and is refused.
+    probs.op = GGML_OP_SOFT_MAX; probs.src[0] = &scaled; probs.src[1] = NULL;
+    { const float sm_params[2] = { 1.0f, 0.0f }; std::memcpy(probs.op_params, sm_params, sizeof(sm_params)); }
     row_sum.op = GGML_OP_SUM_ROWS; row_sum.src[0] = &probs; row_sum.src[1] = &dummy;
 
     if (buffer->iface.init_tensor(buffer, &a) != GGML_STATUS_SUCCESS || buffer->iface.init_tensor(buffer, &b) != GGML_STATUS_SUCCESS || buffer->iface.init_tensor(buffer, &scores) != GGML_STATUS_SUCCESS || buffer->iface.init_tensor(buffer, &scaled) != GGML_STATUS_SUCCESS || buffer->iface.init_tensor(buffer, &probs) != GGML_STATUS_SUCCESS || buffer->iface.init_tensor(buffer, &row_sum) != GGML_STATUS_SUCCESS || buffer->iface.init_tensor(buffer, &scalar) != GGML_STATUS_SUCCESS || buffer->iface.init_tensor(buffer, &dummy) != GGML_STATUS_SUCCESS) { std::fprintf(stderr, "init_tensor failed\n"); buffer->iface.free_buffer(buffer); backend->iface.free(backend); return 1; }
