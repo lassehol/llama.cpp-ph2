@@ -5,6 +5,8 @@
 # Run inside the CUDA 8 container (Ubuntu 16.04 base, CUDA 8.0.61, C++11 tools),
 # on a machine with the GTX 560 visible - every target below touches the GPU.
 #
+# Written against the container's old cmake: no -S/-B, no "--build -j".
+#
 #   ./ggml/src/ggml-cuda8/run-regression.sh            # G37 set (default)
 #   ./ggml/src/ggml-cuda8/run-regression.sh --all      # every smoke target
 #   ./ggml/src/ggml-cuda8/run-regression.sh <target>.. # explicit targets
@@ -57,17 +59,22 @@ fi
 
 # -- configure ----------------------------------------------------------------
 
+echo "== cmake $(cmake --version | head -1 | awk '{print $3}')"
+
+# The CUDA 8 container ships an old cmake: no -S/-B (needs 3.13) and no
+# --build -j (needs 3.12). Use the portable forms - they work on every version.
 if [ ! -f "${BUILD_DIR}/CMakeCache.txt" ]; then
     echo "== configuring ${BUILD_DIR}"
-    cmake -S "${REPO_ROOT}" -B "${BUILD_DIR}" \
-        -DGGML_CUDA8=ON -DGGML_CUDA=OFF || exit 1
+    mkdir -p "${BUILD_DIR}" || exit 1
+    ( cd "${BUILD_DIR}" && cmake "${REPO_ROOT}" -DGGML_CUDA8=ON -DGGML_CUDA=OFF ) || exit 1
 fi
 
 # -- build --------------------------------------------------------------------
 
 echo "== building ${#TARGETS[@]} target(s) with -j${NPROC}"
 for t in "${TARGETS[@]}"; do
-    cmake --build "${BUILD_DIR}" --target "$t" -j "${NPROC}" > /tmp/build-$t.log 2>&1
+    # -j goes after "--" so it reaches make/ninja rather than cmake itself.
+    cmake --build "${BUILD_DIR}" --target "$t" -- -j"${NPROC}" > /tmp/build-$t.log 2>&1
     if [ $? -ne 0 ]; then
         echo "BUILD FAILED: $t   (see /tmp/build-$t.log)"
         tail -30 /tmp/build-$t.log
