@@ -16,6 +16,7 @@
 #include "ggml-cuda8-reduce.h"
 #include "ggml-cuda8-softmax.h"
 #include "ggml-cuda8-backend-buffer.h"
+#include "ggml-cuda8-ggml-buffer.h"
 #include "q8_0-mmv.cuh"
 #include <cstdio>
 // Forward declarations for K-quant dispatch functions
@@ -41,6 +42,46 @@ static int check_tensor_ptrs(
         return -1;
     }
     return 0;
+}
+// G-fix: debug-only residency diagnostic for the K-quant MUL_MAT/GET_ROWS
+// paths. Unlike Q8_0/ADD/scalar, exec_mul_mat_q4k_f32/exec_get_rows_q4k
+// (and their Q6_K equivalents) pass src0/src1/dst pointers straight into
+// the kernel launcher with no host<->device staging. That is the correct
+// design for weight/activation tensors under normal graph_compute -- the
+// ggml scheduler guarantees CUDA8-buffer residency for any tensor it
+// assigns to this backend -- but it leaves no safety net if that
+// invariant is ever violated (e.g. a direct dispatch call in a test that
+// bypasses graph_compute, or a scheduler bug that assigns a host-backed
+// tensor here). A host pointer reaching the kernel launch faults
+// asynchronously on the device and typically only surfaces at the next
+// unrelated cudaDeviceSynchronize()/cudaMemcpy(), which makes the real
+// cause hard to trace back.
+//
+// This is intentionally a loud diagnostic, not a functional gate: it
+// does not change supported()'s return value, so it will not reject
+// tensors that are legitimately exercised outside graph_compute (e.g.
+// smoke tests that allocate CUDA8 buffers via the lower-level
+// ggml_cuda8_buffer_malloc() API directly rather than through the GGML
+// buffer wrapper's residency registry). Only compiled into debug builds.
+static void cuda8_kquant_debug_check_resident(const char * label, const struct ggml_tensor * t) {
+#ifndef NDEBUG
+    if (t == NULL || t->data == NULL) return;
+    const size_t nbytes = ggml_nbytes(t);
+    ggml_backend_buffer_t owner = NULL;
+    size_t offset = 0;
+    if (!ggml_cuda8_ggml_tensor_is_device_resident(t, nbytes, &owner, &offset)) {
+        std::fprintf(stderr,
+            "ggml-cuda8/dispatch: WARNING: %s (data=%p, %zu bytes) is not "
+            "registered as CUDA8-device-resident -- K-quant kernels assume "
+            "device residency and do not stage through host<->device "
+            "copies; if this tensor is actually host memory, the kernel "
+            "launch will fault\n",
+            label, (const void *) t->data, nbytes);
+    }
+#else
+    (void) label;
+    (void) t;
+#endif
 }
 const char * ggml_cuda8_op_name(int op_id) {
     switch (op_id) {
@@ -656,11 +697,18 @@ static int supported_mul_mat_q4k_f32(
         const struct ggml_tensor * src1,
         const struct ggml_tensor * dst) {
     (void) ctx;
-    if (!src0 || !src1 || !dst) return 0;
+    // G-fix: check_tensor_ptrs() also rejects NULL ->data, closing the gap
+    // where a valid-but-unallocated tensor struct previously passed this
+    // gate (only "!src0 || !src1 || !dst" was checked) and would have been
+    // handed straight to the kernel launcher in exec_mul_mat_q4k_f32().
+    if (check_tensor_ptrs(src0, src1, dst) != 0) return 0;
     if (src0->type != GGML_TYPE_Q4_K) return 0;
     if (src1->type != GGML_TYPE_F32)  return 0;
     if (dst->type  != GGML_TYPE_F32)  return 0;
     if (src0->ne[0] % 256 != 0) return 0;  // QK_K alignment
+    cuda8_kquant_debug_check_resident("Q4_K MUL_MAT src0", src0);
+    cuda8_kquant_debug_check_resident("Q4_K MUL_MAT src1", src1);
+    cuda8_kquant_debug_check_resident("Q4_K MUL_MAT dst",  dst);
     return 1;
 }
 // Q6_K MUL_MAT supported check
@@ -670,11 +718,16 @@ static int supported_mul_mat_q6k_f32(
         const struct ggml_tensor * src1,
         const struct ggml_tensor * dst) {
     (void) ctx;
-    if (!src0 || !src1 || !dst) return 0;
+    // G-fix: see supported_mul_mat_q4k_f32() above -- check_tensor_ptrs()
+    // additionally rejects NULL ->data on all three tensors.
+    if (check_tensor_ptrs(src0, src1, dst) != 0) return 0;
     if (src0->type != GGML_TYPE_Q6_K) return 0;
     if (src1->type != GGML_TYPE_F32)  return 0;
     if (dst->type  != GGML_TYPE_F32)  return 0;
     if (src0->ne[0] % 256 != 0) return 0;
+    cuda8_kquant_debug_check_resident("Q6_K MUL_MAT src0", src0);
+    cuda8_kquant_debug_check_resident("Q6_K MUL_MAT src1", src1);
+    cuda8_kquant_debug_check_resident("Q6_K MUL_MAT dst",  dst);
     return 1;
 }
 // Q4_K GET_ROWS supported check
@@ -684,10 +737,15 @@ static int supported_get_rows_q4k(
         const struct ggml_tensor * src1,
         const struct ggml_tensor * dst) {
     (void) ctx;
-    if (!src0 || !src1 || !dst) return 0;
+    // G-fix: see supported_mul_mat_q4k_f32() above -- check_tensor_ptrs()
+    // additionally rejects NULL ->data on all three tensors.
+    if (check_tensor_ptrs(src0, src1, dst) != 0) return 0;
     if (src0->type != GGML_TYPE_Q4_K) return 0;
     if (src1->type != GGML_TYPE_I32)  return 0;
     if (dst->type  != GGML_TYPE_F32)  return 0;
+    cuda8_kquant_debug_check_resident("Q4_K GET_ROWS src0", src0);
+    cuda8_kquant_debug_check_resident("Q4_K GET_ROWS src1", src1);
+    cuda8_kquant_debug_check_resident("Q4_K GET_ROWS dst",  dst);
     return 1;
 }
 // Q6_K GET_ROWS supported check
@@ -697,10 +755,15 @@ static int supported_get_rows_q6k(
         const struct ggml_tensor * src1,
         const struct ggml_tensor * dst) {
     (void) ctx;
-    if (!src0 || !src1 || !dst) return 0;
+    // G-fix: see supported_mul_mat_q4k_f32() above -- check_tensor_ptrs()
+    // additionally rejects NULL ->data on all three tensors.
+    if (check_tensor_ptrs(src0, src1, dst) != 0) return 0;
     if (src0->type != GGML_TYPE_Q6_K) return 0;
     if (src1->type != GGML_TYPE_I32)  return 0;
     if (dst->type  != GGML_TYPE_F32)  return 0;
+    cuda8_kquant_debug_check_resident("Q6_K GET_ROWS src0", src0);
+    cuda8_kquant_debug_check_resident("Q6_K GET_ROWS src1", src1);
+    cuda8_kquant_debug_check_resident("Q6_K GET_ROWS dst",  dst);
     return 1;
 }
 // Q4_K MUL_MAT execute
