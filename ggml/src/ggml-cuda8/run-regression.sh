@@ -38,17 +38,34 @@ find_binary() {
 
 # -- target sets --------------------------------------------------------------
 
-# Changed by G37: the softmax guard and the two corrected synthetic fixtures.
-G37_PRIMARY=(
+# Targets exercising the most recent changes.
+#   G37: the SOFT_MAX guard and the two corrected synthetic fixtures.
+#   G38: grid clamps across the older kernels, plus the oversized-tensor smoke
+#        that drives them past the 65535-block limit.
+PRIMARY=(
+    ggml-cuda8-oversized-smoke
     ggml-cuda8-ggml-backend-supports-op-smoke
     ggml-cuda8-ggml-backend-graph-compute-softmax-smoke
     ggml-cuda8-ggml-backend-graph-compute-attnlike-smoke
 )
 
-# Must be unaffected by G37: these build real graphs with ggml_soft_max(),
-# which emits src[1]=NULL and op_params={1.0f, 0.0f} - still supported.
-G37_REGRESSION=(
+# Standalone kernel smokes for every kernel G38 rewrote. These use small
+# shapes, so they check that the stride loops did not break the ordinary path.
+KERNEL_REGRESSION=(
+    ggml-cuda8-add-smoke
+    ggml-cuda8-mul-smoke
+    ggml-cuda8-scalar-smoke
+    ggml-cuda8-reduce-smoke
+    ggml-cuda8-reduce-max-smoke
     ggml-cuda8-softmax-smoke
+    ggml-cuda8-rms-norm-smoke
+    ggml-cuda8-rope-smoke
+    ggml-cuda8-diagmask-smoke
+    ggml-cuda8-getrows-smoke
+)
+
+# End-to-end graphs. Unaffected in principle by both G37 and G38.
+GRAPH_REGRESSION=(
     ggml-cuda8-dispatch-all-smoke
     ggml-cuda8-ggml-backend-graph-builder-softmax-smoke
     ggml-cuda8-ggml-backend-graph-builder-attnlike-smoke
@@ -66,7 +83,7 @@ if [ "$#" -gt 0 ] && [ "$1" = "--all" ]; then
 elif [ "$#" -gt 0 ]; then
     TARGETS=("$@")
 else
-    TARGETS=("${G37_PRIMARY[@]}" "${G37_REGRESSION[@]}")
+    TARGETS=("${PRIMARY[@]}" "${KERNEL_REGRESSION[@]}" "${GRAPH_REGRESSION[@]}")
 fi
 
 # -- configure ----------------------------------------------------------------

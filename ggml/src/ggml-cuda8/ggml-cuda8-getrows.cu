@@ -6,6 +6,8 @@
 #include <cuda_runtime.h>
 #include <cstdio>
 
+#include "ggml-cuda8-grid.cuh"
+
 static __global__ void kernel_get_rows_f32(
         const float * __restrict__ src0,
         const int   * __restrict__ src1,
@@ -13,15 +15,16 @@ static __global__ void kernel_get_rows_f32(
         const int ne00,
         const int n_tokens) {
 
-    const int token = blockIdx.x;
-    if (token >= n_tokens) return;
+    // G38: row-stride - the grid is clamped to 65535 blocks on Fermi.
+    // No shared memory here, so no __syncthreads() to keep collective.
+    for (int token = blockIdx.x; token < n_tokens; token += gridDim.x) {
+        const int row_idx = src1[token];
+        const float * src_row = src0 + (size_t)row_idx * ne00;
+        float       * dst_row = dst  + (size_t)token   * ne00;
 
-    const int row_idx = src1[token];
-    const float * src_row = src0 + (size_t)row_idx * ne00;
-    float       * dst_row = dst  + (size_t)token   * ne00;
-
-    for (int col = threadIdx.x; col < ne00; col += blockDim.x) {
-        dst_row[col] = src_row[col];
+        for (int col = threadIdx.x; col < ne00; col += blockDim.x) {
+            dst_row[col] = src_row[col];
+        }
     }
 }
 
@@ -38,7 +41,8 @@ extern "C" int ggml_cuda8_op_get_rows_f32(
     }
 
     const int block_size = 256;
-    kernel_get_rows_f32<<<n_tokens, block_size>>>(src0, src1, dst, ne00, n_tokens);
+    kernel_get_rows_f32<<<ggml_cuda8_grid_rows(n_tokens), block_size>>>(
+        src0, src1, dst, ne00, n_tokens);
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {

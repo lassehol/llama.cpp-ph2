@@ -29,6 +29,8 @@
 #include <cstdio>
 #include <cuda_runtime.h>
 
+#include "ggml-cuda8-grid.cuh"
+
 #define GGML_CUDA8_MMV_CHECK(call)                                                 \
     do {                                                                           \
         cudaError_t err__ = (call);                                                \
@@ -59,21 +61,20 @@ static __global__ void ggml_cuda8_mmv_f32_naive_kernel(
     int rows,
     int cols
 ) {
-    const int row = blockIdx.x * blockDim.x + threadIdx.x;
+    // G38: grid-stride - the grid is clamped to 65535 blocks on Fermi.
+    const int stride = blockDim.x * gridDim.x;
 
-    if (row >= rows) {
-        return;
+    for (int row = blockIdx.x * blockDim.x + threadIdx.x; row < rows; row += stride) {
+        const float * Arow = A + (size_t) row * cols;
+
+        float sum = 0.0f;
+
+        for (int j = 0; j < cols; ++j) {
+            sum += Arow[j] * x[j];
+        }
+
+        y[row] = sum;
     }
-
-    const float * Arow = A + (size_t) row * cols;
-
-    float sum = 0.0f;
-
-    for (int j = 0; j < cols; ++j) {
-        sum += Arow[j] * x[j];
-    }
-
-    y[row] = sum;
 }
 
 extern "C" int ggml_cuda8_mmv_f32_naive(
@@ -94,7 +95,7 @@ extern "C" int ggml_cuda8_mmv_f32_naive(
     }
 
     const int block_size = 128;
-    const int grid_size  = (rows + block_size - 1) / block_size;
+    const int grid_size  = ggml_cuda8_grid_1d(rows, block_size);
 
     ggml_cuda8_mmv_f32_naive_kernel<<<grid_size, block_size>>>(d_A, d_x, d_y, rows, cols);
     GGML_CUDA8_MMV_CHECK(cudaGetLastError());
@@ -116,63 +117,70 @@ static __global__ void ggml_cuda8_mmv_f32_block_kernel(
     int rows,
     int cols
 ) {
-    const int row = blockIdx.x;
     const int tid = threadIdx.x;
 
     __shared__ float partial[GGML_CUDA8_MMV_BLOCK_SIZE];
 
-    float sum = 0.0f;
-
-    if (row < rows) {
+    // G38: row-stride - the grid is clamped to 65535 blocks on Fermi.
+    // The loop bound is uniform across the block (row comes from blockIdx.x
+    // plus multiples of gridDim.x), so every thread runs the same number of
+    // iterations and the __syncthreads() below stay collective.
+    for (int row = blockIdx.x; row < rows; row += gridDim.x) {
         const float * Arow = A + (size_t) row * cols;
+
+        float sum = 0.0f;
 
         for (int j = tid; j < cols; j += GGML_CUDA8_MMV_BLOCK_SIZE) {
             sum += Arow[j] * x[j];
         }
-    }
 
-    partial[tid] = sum;
-    __syncthreads();
+        partial[tid] = sum;
+        __syncthreads();
 
-    // Shared-memory tree reduction.
-    // Block size is fixed at 128.
-    if (tid < 64) {
-        partial[tid] += partial[tid + 64];
-    }
-    __syncthreads();
+        // Shared-memory tree reduction.
+        // Block size is fixed at 128.
+        if (tid < 64) {
+            partial[tid] += partial[tid + 64];
+        }
+        __syncthreads();
 
-    if (tid < 32) {
-        partial[tid] += partial[tid + 32];
-    }
-    __syncthreads();
+        if (tid < 32) {
+            partial[tid] += partial[tid + 32];
+        }
+        __syncthreads();
 
-    if (tid < 16) {
-        partial[tid] += partial[tid + 16];
-    }
-    __syncthreads();
+        if (tid < 16) {
+            partial[tid] += partial[tid + 16];
+        }
+        __syncthreads();
 
-    if (tid < 8) {
-        partial[tid] += partial[tid + 8];
-    }
-    __syncthreads();
+        if (tid < 8) {
+            partial[tid] += partial[tid + 8];
+        }
+        __syncthreads();
 
-    if (tid < 4) {
-        partial[tid] += partial[tid + 4];
-    }
-    __syncthreads();
+        if (tid < 4) {
+            partial[tid] += partial[tid + 4];
+        }
+        __syncthreads();
 
-    if (tid < 2) {
-        partial[tid] += partial[tid + 2];
-    }
-    __syncthreads();
+        if (tid < 2) {
+            partial[tid] += partial[tid + 2];
+        }
+        __syncthreads();
 
-    if (tid < 1) {
-        partial[tid] += partial[tid + 1];
-    }
-    __syncthreads();
+        if (tid < 1) {
+            partial[tid] += partial[tid + 1];
+        }
+        __syncthreads();
 
-    if (tid == 0 && row < rows) {
-        y[row] = partial[0];
+        if (tid == 0) {
+            y[row] = partial[0];
+        }
+
+        // Guard the next iteration's partial[tid] write against threads still
+        // reading partial[0] above.
+        __syncthreads();
     }
 }
 
@@ -193,7 +201,7 @@ extern "C" int ggml_cuda8_mmv_f32_block(
         return -1;
     }
 
-    const int grid_size  = rows;
+    const int grid_size  = ggml_cuda8_grid_rows(rows);
     const int block_size = GGML_CUDA8_MMV_BLOCK_SIZE;
 
     ggml_cuda8_mmv_f32_block_kernel<<<grid_size, block_size>>>(d_A, d_x, d_y, rows, cols);

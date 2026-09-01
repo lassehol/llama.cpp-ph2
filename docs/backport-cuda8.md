@@ -32,13 +32,14 @@ The `ggml-cuda8` public surface is C, so no C++ ABI crosses the boundary. Note t
 is in scope, which means the Fermi box can also be driven as a *remote* ggml backend rather than
 hosting the whole model — a useful escape valve given the 1 GB limit in §4.
 
-**Implemented dispatch ops (15) + no-ops (5):**
+**Implemented dispatch ops (19) + no-ops (5):**
 
 ```
 CPY_F32   ADD_F32   ADD_SCALAR_F32   MUL_SCALAR_F32   MUL_F32   MUL_BROADCAST_F32
 REDUCE_SUM_ROWS_F32   REDUCE_MAX_ROWS_F32   SOFTMAX_ROWS_F32
 MUL_MAT_Q8_0xF32_VEC   RMS_NORM_F32   ROPE_F32   CONT_F32
 DIAG_MASK_INF_F32   GET_ROWS_F32
+MUL_MAT_Q4_K_F32   MUL_MAT_Q6_K_F32   GET_ROWS_Q4_K   GET_ROWS_Q6_K
 no-ops: NONE  RESHAPE  VIEW  PERMUTE  TRANSPOSE
 ```
 
@@ -59,21 +60,27 @@ GGUF graph differs in ways that matter. Because `supports_op` falls back to CPU,
 are *correctness* blockers — they are **graph-split** blockers, and a graph that splits between
 CPU and GPU on every other node will be slower than pure CPU.
 
-### 2.1 MUL_MAT — the dominant gap
+### 2.1 MUL_MAT — much improved, two gaps left
 
-Current support: `Q8_0 [cols,rows] × F32 vector [cols] → F32 [rows]`. That is matrix-vector only.
+Current support, after the Q4_K/Q6_K work:
+
+| src0 type | Batching | Notes |
+|---|---|---|
+| **Q4_K** | true `ne11` batching | `ggml-cuda8-q4k.cu:189`, one block per output element, 2D grid already clamped for Fermi |
+| **Q6_K** | true `ne11` batching | `ggml-cuda8-q6k.cu:182`, same shape |
+| Q8_0 | per-token loop | Runs on GPU but with a **host round-trip per token** (`dispatch.cpp:105,146-157`). Now largely superseded — prefer Q4_K/Q6_K, which are both better for 1 GB and properly batched. |
+
+Remaining gaps:
 
 | Gap | Why it matters |
 |---|---|
-| `ne11 > 1` is *emulated*, not batched | It does run on GPU, but as a per-token loop of MMV launches with a **host round-trip per token** (`dispatch.cpp:105,146-157`). Prompt eval will be latency-bound on PCIe, not compute-bound. Needs a real batched path. |
-| **Q4_0 / Q4_K / Q6_K** | See §4 — Q8_0 does not fit in 1 GB for any useful model. This is the hard blocker on usefulness. |
-| F16 src0 | `token_embd` / `output` are commonly F16 even in quantized GGUFs. |
-| F32 × F32 not wired | Needed for the attention matmuls (K·Q, probs·V), which operate on activations, not weights. **The kernels already exist** (`mmv.cu:210`) — they just need a dispatch op id and a `supports_op` entry. |
+| F32 × F32 not wired | Needed for the attention matmuls (K·Q, probs·V), which operate on activations, not weights. **The kernels already exist** (`mmv.cu:210`) — they just need a dispatch op id and a `supports_op` entry. Cheapest remaining item on the list. |
 | Permuted / non-contiguous src1, 3D+ shapes | The attention matmuls use permuted views. Contiguous-only support means CPU fallback in the hottest loop. |
+| F16 src0 | `token_embd` / `output` are sometimes F16 even in quantized GGUFs. Needs G49. |
 
-No tensor-core substitute is needed: dequantize-to-F32 + `cublasSgemm` covers batched matmul, and
-cuBLAS SGEMM works fine on CUDA 8 / Fermi. There is currently no cuBLAS usage anywhere in
-`ggml-cuda8/`.
+Q4_0 is no longer on the critical path: Q4_K supersedes it for the 1 GB budget and is done.
+No cuBLAS is used anywhere in `ggml-cuda8/`, and with Q4_K/Q6_K batched natively it may not be
+needed at all.
 
 ### 2.2 Attention
 
@@ -94,8 +101,8 @@ cuBLAS SGEMM works fine on CUDA 8 / Fermi. There is currently no cuBLAS usage an
 
 ### 2.4 Smaller gaps
 
-- `GET_ROWS` with **quantized** src0 — in a quantized GGUF the embedding table is quantized, so the
-  current F32-only path never fires on a real model.
+- ~~`GET_ROWS` with **quantized** src0~~ — **done** for Q4_K and Q6_K (`q4k.cu:174`, `q6k.cu:167`).
+  Other quant types still fall back.
 - `GGML_OP_SCALE` (distinct node from MUL-by-scalar).
 - `ADD` with broadcast (bias rows).
 - `ROPE` mode NEOX (`mode=2`) and frequency scaling / YaRN — currently `mode=0, ext_factor=0` only.
@@ -123,20 +130,30 @@ plausible-looking wrong attention weights.
 `scale != 1.0f` or `max_bias != 0.0f`. That restores correct CPU fallback in one commit. The real
 fix (G40) follows.
 
-**3.2 `gridDim.x` maxes at 65535 on compute 2.x** (it is 2³¹−1 only from sm_30). Grep for `65535`,
-`gridDim` or a grid-stride loop across `ggml-cuda8/` returns **zero hits** — all 17 kernel launches
-are unclamped: `add.cu:25`, `mul.cu:29,74`, `scalar.cu:49,84`, `mmv.cu:99,199`, `rope.cu:80`,
-`getrows.cu:41`, `diagmask.cu:37`, and the row-indexed launches `reduce.cu:137,176`,
-`softmax.cu:113`, `rms-norm.cu:47`, **`q8_0-mmv.cu:177,256`** (the MUL_MAT path). At 256
-threads/block an element-wise kernel exceeds the limit above ~16.7 M elements — exactly a 4096×4096
-tensor. Smoke tests use small shapes, so this has never fired. On a real model it will.
-→ Add a grid-stride loop + `min(blocks, 65535)` clamp to every kernel, plus a deliberate
-oversized-tensor smoke test. Before the first real model run, not after.
+**3.2 `gridDim.x` maxes at 65535 on compute 2.x — FIXED in G38, pending hardware regression.**
+(it is 2³¹−1 only from sm_30)
 
-**3.3 63 registers per thread on compute 2.x** (255 from sm_35). Nothing in the backend uses
-`__launch_bounds__` or `-maxrregcount` (zero hits, including the 53 KB `CMakeLists.txt`). Spills to
-local memory are invisible without measurement.
-→ Build with `-Xptxas -v` and record per-kernel register/spill counts as a baseline.
+**Correction to an earlier draft of this document:** this was described as failing *silently with
+wrong results*. That was wrong. Every launcher in `ggml-cuda8/` checks `cudaGetLastError()`
+immediately after its launch, so an over-limit grid is rejected with `cudaErrorInvalidConfiguration`
+and surfaces as a dispatch failure. Loud, not silent — but it still means any model with a tensor
+above ~16.7 M elements (a 4096×4096 weight matrix, at 256 threads/block) simply cannot run.
+
+The genuinely silent variant is *clamping without a stride loop*: the launch then succeeds and
+quietly computes only the first 65535 blocks' worth of output. G38's smoke test checks past that
+boundary specifically to catch it.
+
+Q4_K/Q6_K MUL_MAT (`q4k.cu:195`, `q6k.cu:188`) and `q8_0-mmv.cu:178,258` already handled this with
+a 2D grid before G38. G38 converted the remaining launches to clamp + stride loop: `add.cu`,
+`mul.cu` (×2), `scalar.cu` (×2), `rope.cu`, `getrows.cu`, `diagmask.cu`, `reduce.cu` (×2),
+`softmax.cu`, `rms-norm.cu`, `mmv.cu` (×2), and the K-quant `GET_ROWS` (`q4k.cu`, `q6k.cu`).
+
+**3.3 63 registers per thread on compute 2.x** (255 from sm_35). Spills to local memory are
+invisible without measurement — nothing fails, the kernel is just quietly several times slower.
+`ggml-cuda8-q6k.cu` now uses `__launch_bounds__(256, 2)`; most kernels still do not.
+→ G38 added `-DGGML_CUDA8_PTXAS_VERBOSE=ON`, which turns on `-Xptxas -v`. Still to do: run it and
+record the baseline, paying particular attention to the K-quant kernels, which dequantize a whole
+block into registers.
 
 ---
 
@@ -157,9 +174,10 @@ VRAM is the binding constraint, and it drives the quantization priority:
 | Llama 3.2 1B | ~1.4 GB | ~0.8 GB | Q4, tight |
 | 3B class | — | ~1.9 GB | partial offload only |
 
-**This is why Q4_0/Q4_K matters more than batched matmul.** Q8_0-only support means the largest
-fully-offloaded model is under 1B parameters. Note also that ROPE NeoX is required for Qwen3, so
-the two most attractive small models each need one currently-missing feature.
+**Q4_K support removes the binding constraint.** With Q4_K and Q6_K now implemented, TinyLlama 1.1B
+and Llama 3.2 1B are both in range at Q4_K_M, where Q8_0-only support capped the port at well under
+1B. Qwen3 0.6B is the roomiest option but still needs ROPE NeoX (G45), so Llama 3.2 1B or TinyLlama
+is the more likely first real load.
 
 ---
 
@@ -170,17 +188,23 @@ Ordered by "cost to implement ÷ graph splits eliminated", not by tidiness.
 | # | Work | Rationale |
 |---|---|---|
 | ~~**G37**~~ | ~~Tighten `supports_op` for SOFT_MAX (reject mask / sinks / scale / max_bias)~~ | **DONE — PASS on GTX 560, 11/11.** §3.1. See `ggml-cuda8/README.md` G37. |
-| **G38** | Grid-dim clamp + grid-stride loops across all 17 launches; oversized-tensor smoke; `-Xptxas -v` register baseline | §3.2, §3.3. Must precede any real model run. |
-| **G39** | Load a real GGUF through `llama-server` (or `rpc-server`) with `GGML_CUDA8_HOST`; log the CPU/GPU split count and per-op fallback reasons | **Measure before optimizing.** The split log turns the rest of this list from guesswork into data. |
-| **G40** | Q4_0 MMV (matrix-vector) | Unlocks models that fit in 1 GB. Highest value per line of code. |
-| **G41** | `SOFT_MAX_EXT` proper: mask tensor + scale + `max_bias` | Small delta on an existing kernel; removes a split from the hottest loop and reverts G37's restriction. |
+Already landed out of order (see `ggml-cuda8/README.md`): **Q4_K / Q6_K MUL_MAT with true `ne11`
+batching**, and **`GET_ROWS` for Q4_K / Q6_K**. Those covered what were G40, G44 (for K-quants),
+G46 and G48 in the original ordering, and they moved the critical path considerably. Renumbered
+accordingly:
+
+| # | Work | Rationale |
+|---|---|---|
+| ~~**G38**~~ | ~~Grid clamps on the remaining launches; oversized-tensor smoke; `-Xptxas -v`~~ | **Code done, pending hardware regression.** §3.2, §3.3. Register baseline still to be measured. |
+| **G39** | Load a real GGUF through `llama-server` (or `rpc-server`) with `GGML_CUDA8_HOST`; log the CPU/GPU split count and per-op fallback reasons | **Measure before optimizing.** With K-quants working, a Q4_K model is now a realistic first load. The split log turns the rest of this list from guesswork into data. |
+| **G40** | `GLU` / `SWIGLU` (+ `UNARY` SILU) | Recovers the FFN — the largest single block of FLOPs, and now the biggest hole. |
+| **G41** | `SOFT_MAX_EXT` proper: mask tensor + scale + `max_bias` | Reverts G37's restriction. Real attention softmax currently runs on CPU. |
 | **G42** | Wire the existing F32×F32 matvec (`mmv.cu:210`) into dispatch + `supports_op` | Kernel already written and benched — near-free win for the attention matmuls. |
-| **G43** | `GLU` / `SWIGLU` (+ `UNARY` SILU) | Recovers the FFN — the largest single block of FLOPs. |
-| **G44** | True batched MUL_MAT (`ne11 > 1`) via dequant + `cublasSgemm`, replacing the per-token host round-trip loop | Makes prompt processing compute-bound instead of PCIe-bound. |
-| **G45** | `SET_ROWS` + F32 KV cache path | Keeps the KV cache on-device. |
-| **G46** | `GET_ROWS` quantized src0; `SCALE`; broadcast `ADD` | Cheap leaf-node splits. |
-| **G47** | ROPE NEOX + freq scaling | Opens up Qwen/Phi-class models. |
-| **G48** | Q4_K / Q6_K MMV | Better quality per byte than Q4_0. |
+| **G43** | `SET_ROWS` + F32 KV cache path | Keeps the KV cache on-device. |
+| **G44** | `SCALE`; broadcast `ADD` | Cheap leaf-node splits. |
+| **G45** | ROPE NEOX + freq scaling | Opens up Qwen/Phi-class models. |
+| **G46** | Permuted / non-contiguous src1 for MUL_MAT | The attention matmuls use permuted views. |
+| **G47** | Q8_0 batched MUL_MAT, or drop Q8_0 to CPU | Only worth doing if a Q8_0 model is actually wanted; Q4_K is the better fit for 1 GB. |
 | **G49** | F16 *storage* support (convert on load, compute in F32) | Removes the `--cache-type f32` workaround and handles F16 `token_embd`/`output`. **Unblocked** — conversion verified on sm_21, §7. |
 | **G50** | Perf: occupancy, block-size retune for 48 KB shared / 63 registers, `__launch_bounds__` | Only meaningful once the graph stops splitting. |
 
@@ -191,8 +215,10 @@ log contradicts this ordering, follow the log.
 
 ## 6. Housekeeping
 
-`ggml/src/ggml-cuda8/` currently holds **139 backup files** (`*.gNN*-backup-<epoch>`,
-`*.fix-*`, `*-reset-*`) against 119 real source files, and `.gitignore` does not cover them.
+`ggml/src/ggml-cuda8/` currently holds **141 backup files** (`*.gNN*-backup-<epoch>`,
+`*.fix-*`, `*-reset-*`) against ~121 real source files, and `.gitignore` does not cover them —
+two more arrived with the G17A3 synchronize fix, so they are being committed to git as they
+accumulate.
 They should be deleted or moved out of the source tree — git already provides the history they
 duplicate, and they make the directory listing unreadable.
 

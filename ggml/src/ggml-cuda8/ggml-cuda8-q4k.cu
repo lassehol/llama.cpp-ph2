@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <stdint.h>
 
+#include "ggml-cuda8-grid.cuh"
+
 #define QK_K 256
 #define K_SCALE_SIZE 12
 
@@ -60,35 +62,39 @@ __global__ void kernel_get_rows_q4k(
         const int   * __restrict__ src1,
         float       * __restrict__ dst,
         const int ne00,
+        const int n_tokens,
         const int nb01,
         const int nb1) {
 
-    const int token = blockIdx.x;
-    const int tid   = threadIdx.x;
-    const int row_idx = src1[token];
+    const int tid = threadIdx.x;
 
-    const int nb = ne00 / QK_K;  // Q4_K blocks per row
-    const block_q4_K * row = (const block_q4_K *)((const char *)src0 + (size_t)row_idx * nb01);
-    float * out = (float *)((char *)dst + (size_t)token * nb1);
+    // G38: row-stride - the grid is clamped to 65535 blocks on Fermi.
+    for (int token = blockIdx.x; token < n_tokens; token += gridDim.x) {
+        const int row_idx = src1[token];
 
-    // Each thread processes full blocks with stride
-    for (int b = tid; b < nb; b += blockDim.x) {
-        const block_q4_K * blk = &row[b];
-        const float d    = fp16_to_f32(blk->d);
-        const float dmin = fp16_to_f32(blk->dmin);
+        const int nb = ne00 / QK_K;  // Q4_K blocks per row
+        const block_q4_K * row = (const block_q4_K *)((const char *)src0 + (size_t)row_idx * nb01);
+        float * out = (float *)((char *)dst + (size_t)token * nb1);
 
-        for (int j = 0; j < 8; j++) {
-            uint8_t sc, mn;
-            get_scale_min_k4(j, blk->scales, sc, mn);
-            const float scale = d * (float)sc;
-            const float min   = dmin * (float)mn;
-            const int g = j / 2;
-            const int is_high = j & 1;
+        // Each thread processes full blocks with stride
+        for (int b = tid; b < nb; b += blockDim.x) {
+            const block_q4_K * blk = &row[b];
+            const float d    = fp16_to_f32(blk->d);
+            const float dmin = fp16_to_f32(blk->dmin);
 
-            for (int l = 0; l < 32; l++) {
-                uint8_t qbyte = blk->qs[g * 32 + l];
-                uint8_t q = is_high ? (qbyte >> 4) : (qbyte & 0xF);
-                out[b * QK_K + j * 32 + l] = scale * (float)q - min;
+            for (int j = 0; j < 8; j++) {
+                uint8_t sc, mn;
+                get_scale_min_k4(j, blk->scales, sc, mn);
+                const float scale = d * (float)sc;
+                const float min   = dmin * (float)mn;
+                const int g = j / 2;
+                const int is_high = j & 1;
+
+                for (int l = 0; l < 32; l++) {
+                    uint8_t qbyte = blk->qs[g * 32 + l];
+                    uint8_t q = is_high ? (qbyte >> 4) : (qbyte & 0xF);
+                    out[b * QK_K + j * 32 + l] = scale * (float)q - min;
+                }
             }
         }
     }
@@ -171,7 +177,8 @@ extern "C" {
 int ggml_cuda8_op_get_rows_q4k(
         const void * src0, const int * src1, float * dst,
         int ne00, int n_tokens, int nb01, int nb1) {
-    kernel_get_rows_q4k<<<n_tokens, 256>>>(src0, src1, dst, ne00, nb01, nb1);
+    kernel_get_rows_q4k<<<ggml_cuda8_grid_rows(n_tokens), 256>>>(
+        src0, src1, dst, ne00, n_tokens, nb01, nb1);
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
         fprintf(stderr, "ggml-cuda8/q4k get_rows: %s\n", cudaGetErrorString(err));

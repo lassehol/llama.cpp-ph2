@@ -2,13 +2,16 @@
 #include <cuda_runtime.h>
 #include <cstdio>
 
+#include "ggml-cuda8-grid.cuh"
+
 static __global__ void kernel_mul_f32(
         const float * __restrict__ a,
         const float * __restrict__ b,
         float * __restrict__ c,
         const int n) {
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) {
+    // G38: grid-stride - the grid is clamped to 65535 blocks on Fermi.
+    const int stride = blockDim.x * gridDim.x;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += stride) {
         c[i] = a[i] * b[i];
     }
 }
@@ -24,7 +27,7 @@ extern "C" int ggml_cuda8_mul_f32_launch(
     }
 
     const int block = 256;
-    const int grid  = (n + block - 1) / block;
+    const int grid  = ggml_cuda8_grid_1d(n, block);
 
     kernel_mul_f32<<<grid, block>>>(a, b, c, n);
 
@@ -52,8 +55,9 @@ static __global__ void kernel_mul_broadcast_f32(
         float * __restrict__ c,
         const int n_total,
         const int n_repeat) {
-    const int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n_total) {
+    // G38: grid-stride - the grid is clamped to 65535 blocks on Fermi.
+    const int stride = blockDim.x * gridDim.x;
+    for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n_total; i += stride) {
         c[i] = a[i] * b[i % n_repeat];
     }
 }
@@ -69,7 +73,7 @@ extern "C" int ggml_cuda8_mul_broadcast_f32_launch(
     }
 
     const int block = 256;
-    const int grid  = (n_total + block - 1) / block;
+    const int grid  = ggml_cuda8_grid_1d(n_total, block);
 
     kernel_mul_broadcast_f32<<<grid, block>>>(a, b, c, n_total, n_repeat);
 

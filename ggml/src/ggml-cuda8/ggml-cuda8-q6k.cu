@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <stdint.h>
 
+#include "ggml-cuda8-grid.cuh"
+
 #define QK_K 256
 
 // Q6_K block: 210 bytes -> 256 values
@@ -65,23 +67,27 @@ __global__ void kernel_get_rows_q6k(
         const int   * __restrict__ src1,
         float       * __restrict__ dst,
         const int ne00,
+        const int n_tokens,
         const int nb01,
         const int nb1) {
 
-    const int token = blockIdx.x;
-    const int tid   = threadIdx.x;
-    const int row_idx = src1[token];
+    const int tid = threadIdx.x;
 
-    const int nb = ne00 / QK_K;
-    const block_q6_K * row = (const block_q6_K *)((const char *)src0 + (size_t)row_idx * nb01);
-    float * out = (float *)((char *)dst + (size_t)token * nb1);
+    // G38: row-stride - the grid is clamped to 65535 blocks on Fermi.
+    for (int token = blockIdx.x; token < n_tokens; token += gridDim.x) {
+        const int row_idx = src1[token];
 
-    for (int b = tid; b < nb; b += blockDim.x) {
-        const block_q6_K * blk = &row[b];
-        const float d = fp16_to_f32(blk->d);
+        const int nb = ne00 / QK_K;
+        const block_q6_K * row = (const block_q6_K *)((const char *)src0 + (size_t)row_idx * nb01);
+        float * out = (float *)((char *)dst + (size_t)token * nb1);
 
-        for (int i = 0; i < QK_K; i++) {
-            out[b * QK_K + i] = dequant_q6k_val(blk, i, d);
+        for (int b = tid; b < nb; b += blockDim.x) {
+            const block_q6_K * blk = &row[b];
+            const float d = fp16_to_f32(blk->d);
+
+            for (int i = 0; i < QK_K; i++) {
+                out[b * QK_K + i] = dequant_q6k_val(blk, i, d);
+            }
         }
     }
 }
@@ -164,7 +170,8 @@ extern "C" {
 int ggml_cuda8_op_get_rows_q6k(
         const void * src0, const int * src1, float * dst,
         int ne00, int n_tokens, int nb01, int nb1) {
-    kernel_get_rows_q6k<<<n_tokens, 256>>>(src0, src1, dst, ne00, nb01, nb1);
+    kernel_get_rows_q6k<<<ggml_cuda8_grid_rows(n_tokens), 256>>>(
+        src0, src1, dst, ne00, n_tokens, nb01, nb1);
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
         fprintf(stderr, "ggml-cuda8/q6k get_rows: %s\n", cudaGetErrorString(err));

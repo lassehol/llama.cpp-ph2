@@ -4,6 +4,8 @@
 #include <cstdio>
 #include <math.h>
 
+#include "ggml-cuda8-grid.cuh"
+
 // One thread per pair of elements across all heads/positions.
 // Layout: x[i0 + i1*ne0 + i2*ne0*ne1 + i3*ne0*ne1*ne2]
 //   ne0 = head_dim, ne1 = n_heads, ne2 = seq_len, ne3 = batch
@@ -21,41 +23,47 @@ static __global__ void kernel_rope_f32(
         const float theta_scale,
         const float freq_scale) {
 
-    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
     const int pairs_per_row = ne0 / 2;
     const int rows = ne1 * ne2 * ne3;
     const int total_pairs = pairs_per_row * rows;
-    if (idx >= total_pairs) return;
 
-    const int pair = idx % pairs_per_row;
-    const int row  = idx / pairs_per_row;
+    // G38: grid-stride - the grid is clamped to 65535 blocks on Fermi.
+    const int stride = blockDim.x * gridDim.x;
 
-    const int i1 = row % ne1;
-    const int i2 = (row / ne1) % ne2;
-    const int i3 = row / (ne1 * ne2);
+    for (int idx = blockIdx.x * blockDim.x + threadIdx.x;
+         idx < total_pairs;
+         idx += stride) {
 
-    const int i0 = pair * 2;
-    const int offset = i0 + i1 * ne0
-                          + i2 * ne0 * ne1
-                          + i3 * ne0 * ne1 * ne2;
+        const int pair = idx % pairs_per_row;
+        const int row  = idx / pairs_per_row;
 
-    if (i0 >= n_dims) {
-        // Beyond rotary dims - pass through unchanged
-        dst[offset]     = x[offset];
-        dst[offset + 1] = x[offset + 1];
-        return;
+        const int i1 = row % ne1;
+        const int i2 = (row / ne1) % ne2;
+        const int i3 = row / (ne1 * ne2);
+
+        const int i0 = pair * 2;
+        const int offset = i0 + i1 * ne0
+                              + i2 * ne0 * ne1
+                              + i3 * ne0 * ne1 * ne2;
+
+        if (i0 >= n_dims) {
+            // Beyond rotary dims - pass through unchanged
+            dst[offset]     = x[offset];
+            dst[offset + 1] = x[offset + 1];
+            continue;
+        }
+
+        const int p = pos[i2];
+        float theta = (float)p * powf(theta_scale, (float)pair) * freq_scale;
+        float cos_t = cosf(theta);
+        float sin_t = sinf(theta);
+
+        float x0 = x[offset];
+        float x1 = x[offset + 1];
+
+        dst[offset]     = x0 * cos_t - x1 * sin_t;
+        dst[offset + 1] = x0 * sin_t + x1 * cos_t;
     }
-
-    const int p = pos[i2];
-    float theta = (float)p * powf(theta_scale, (float)pair) * freq_scale;
-    float cos_t = cosf(theta);
-    float sin_t = sinf(theta);
-
-    float x0 = x[offset];
-    float x1 = x[offset + 1];
-
-    dst[offset]     = x0 * cos_t - x1 * sin_t;
-    dst[offset + 1] = x0 * sin_t + x1 * cos_t;
 }
 
 extern "C" int ggml_cuda8_op_rope_f32(
@@ -75,7 +83,7 @@ extern "C" int ggml_cuda8_op_rope_f32(
     const float theta_scale = powf(freq_base, -2.0f / (float)n_dims);
     const int total_pairs = (ne0 / 2) * ne1 * ne2 * ne3;
     const int block = 256;
-    const int grid  = (total_pairs + block - 1) / block;
+    const int grid  = ggml_cuda8_grid_1d(total_pairs, block);
 
     kernel_rope_f32<<<grid, block>>>(
         x, dst, pos, ne0, ne1, ne2, ne3,

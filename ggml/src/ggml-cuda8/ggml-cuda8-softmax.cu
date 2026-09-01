@@ -8,6 +8,8 @@
 #include <float.h>
 #include <math.h>
 
+#include "ggml-cuda8-grid.cuh"
+
 static const int GGML_CUDA8_SOFTMAX_BLOCK_SIZE = 128;
 
 static __device__ void ggml_cuda8_reduce_max_128(float * partial, int tid) {
@@ -50,50 +52,55 @@ static __global__ void ggml_cuda8_softmax_rows_f32_kernel(
     int rows,
     int cols
 ) {
-    const int row = blockIdx.x;
     const int tid = threadIdx.x;
 
     __shared__ float partial[GGML_CUDA8_SOFTMAX_BLOCK_SIZE];
 
-    if (row >= rows) {
-        return;
-    }
+    // G38: row-stride - the grid is clamped to 65535 blocks on Fermi.
+    // The previous `if (row >= rows) return;` is gone deliberately: inside a
+    // row loop an early return would let a thread skip the __syncthreads()
+    // its block-mates are waiting on. The loop bound is uniform across the
+    // block, so all threads iterate together.
+    for (int row = blockIdx.x; row < rows; row += gridDim.x) {
+        const float * row_src = src + (size_t) row * cols;
+        float * row_dst = dst + (size_t) row * cols;
 
-    const float * row_src = src + (size_t) row * cols;
-    float * row_dst = dst + (size_t) row * cols;
+        float vmax = -FLT_MAX;
 
-    float vmax = -FLT_MAX;
+        for (int c = tid; c < cols; c += GGML_CUDA8_SOFTMAX_BLOCK_SIZE) {
+            const float x = row_src[c];
+            vmax = vmax > x ? vmax : x;
+        }
 
-    for (int c = tid; c < cols; c += GGML_CUDA8_SOFTMAX_BLOCK_SIZE) {
-        const float x = row_src[c];
-        vmax = vmax > x ? vmax : x;
-    }
+        partial[tid] = vmax;
+        __syncthreads();
 
-    partial[tid] = vmax;
-    __syncthreads();
+        ggml_cuda8_reduce_max_128(partial, tid);
 
-    ggml_cuda8_reduce_max_128(partial, tid);
+        const float row_max = partial[0];
+        __syncthreads();
 
-    const float row_max = partial[0];
-    __syncthreads();
+        float sum = 0.0f;
 
-    float sum = 0.0f;
+        for (int c = tid; c < cols; c += GGML_CUDA8_SOFTMAX_BLOCK_SIZE) {
+            sum += expf(row_src[c] - row_max);
+        }
 
-    for (int c = tid; c < cols; c += GGML_CUDA8_SOFTMAX_BLOCK_SIZE) {
-        sum += expf(row_src[c] - row_max);
-    }
+        partial[tid] = sum;
+        __syncthreads();
 
-    partial[tid] = sum;
-    __syncthreads();
+        ggml_cuda8_reduce_sum_128(partial, tid);
 
-    ggml_cuda8_reduce_sum_128(partial, tid);
+        const float row_sum = partial[0];
+        const float inv_sum = row_sum > 0.0f ? 1.0f / row_sum : 0.0f;
+        __syncthreads();
 
-    const float row_sum = partial[0];
-    const float inv_sum = row_sum > 0.0f ? 1.0f / row_sum : 0.0f;
-    __syncthreads();
+        for (int c = tid; c < cols; c += GGML_CUDA8_SOFTMAX_BLOCK_SIZE) {
+            row_dst[c] = expf(row_src[c] - row_max) * inv_sum;
+        }
 
-    for (int c = tid; c < cols; c += GGML_CUDA8_SOFTMAX_BLOCK_SIZE) {
-        row_dst[c] = expf(row_src[c] - row_max) * inv_sum;
+        // Guard the next iteration's partial[tid] write.
+        __syncthreads();
     }
 }
 
@@ -110,7 +117,7 @@ extern "C" int ggml_cuda8_softmax_rows_f32_launch(
         return -1;
     }
 
-    ggml_cuda8_softmax_rows_f32_kernel<<<rows, GGML_CUDA8_SOFTMAX_BLOCK_SIZE>>>(
+    ggml_cuda8_softmax_rows_f32_kernel<<<ggml_cuda8_grid_rows(rows), GGML_CUDA8_SOFTMAX_BLOCK_SIZE>>>(
         src, dst, rows, cols
     );
 

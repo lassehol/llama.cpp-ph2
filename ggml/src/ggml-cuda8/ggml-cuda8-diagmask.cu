@@ -4,20 +4,27 @@
 #include <cstdio>
 #include <float.h>
 
+#include "ggml-cuda8-grid.cuh"
+
 static __global__ void kernel_diag_mask_inf_f32(
         const float * __restrict__ x,
         float       * __restrict__ dst,
+        const int nrows,
         const int ncols,
         const int rows_per_channel,
         const int n_past) {
 
     const int col = blockDim.y * blockIdx.y + threadIdx.y;
-    const int row = blockDim.x * blockIdx.x + threadIdx.x;
 
     if (col >= ncols) return;
 
-    const int i = row * ncols + col;
-    dst[i] = x[i] - (col > n_past + row % rows_per_channel) * FLT_MAX;
+    // G38: grid.x was nrows, which breaks past 65535 rows on Fermi. Stride
+    // instead. Safe to return early above: this kernel has no __syncthreads().
+    for (int row = blockIdx.x; row < nrows; row += gridDim.x) {
+        // size_t: row * ncols overflows int well before the tensor does.
+        const size_t i = (size_t) row * ncols + col;
+        dst[i] = x[i] - (col > n_past + row % rows_per_channel) * FLT_MAX;
+    }
 }
 
 extern "C" int ggml_cuda8_op_diag_mask_inf_f32(
@@ -32,10 +39,10 @@ extern "C" int ggml_cuda8_op_diag_mask_inf_f32(
     const int block_size = 256;
     const dim3 block_dims(1, block_size, 1);
     const int block_num_x = (ncols + block_size - 1) / block_size;
-    const dim3 grid_dims(nrows, block_num_x, 1);
+    const dim3 grid_dims(ggml_cuda8_grid_rows(nrows), block_num_x, 1);
 
     kernel_diag_mask_inf_f32<<<grid_dims, block_dims>>>(
-        x, dst, ncols, rows_per_channel, n_past);
+        x, dst, nrows, ncols, rows_per_channel, n_past);
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {

@@ -28,6 +28,24 @@ set(CUDA_NVCC_FLAGS
     -Xcompiler=-fPIC
 )
 
+# G38: per-kernel register and spill counts.
+#
+# sm_2x caps registers at 63 per thread (255 from sm_35). Kernels that
+# dequantize a whole block into registers - ggml-cuda8-q4k.cu and -q6k.cu in
+# particular - can blow past that and spill to local memory, which is off-chip
+# and roughly as slow as a global access. Spills are invisible without asking:
+# nothing fails, the kernel is just quietly several times slower.
+#
+#   cmake .. -DGGML_CUDA8_PTXAS_VERBOSE=ON
+#
+# then look for "Used N registers" and any "bytes spill stores/loads".
+option(GGML_CUDA8_PTXAS_VERBOSE "Print per-kernel register/spill counts (sm_2x caps at 63)" OFF)
+
+if (GGML_CUDA8_PTXAS_VERBOSE)
+    message(STATUS "ggml-cuda8: ptxas verbose enabled - watch for register spills")
+    set(CUDA_NVCC_FLAGS ${CUDA_NVCC_FLAGS} -Xptxas -v)
+endif()
+
 include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/../../include
@@ -1454,4 +1472,17 @@ target_link_libraries(ggml-cuda8-ggml-backend-supports-op-smoke
     ggml-cuda8-kernels
     ${CUDA_LIBRARIES}
 )
+
+# -- G38: oversized-tensor smoke ----------------------------------------------
+# Deliberately exceeds the Fermi 65535-block grid limit. Links the whole kernel
+# library rather than individual .cu files because it exercises several
+# launchers at once.
+cuda_add_executable(ggml-cuda8-oversized-smoke
+    ggml-cuda8-oversized-smoke.cu)
+target_link_libraries(ggml-cuda8-oversized-smoke
+    ggml-cuda8-kernels
+    ${CUDA_LIBRARIES}
+)
+set_target_properties(ggml-cuda8-oversized-smoke PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 

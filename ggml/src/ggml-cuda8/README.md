@@ -1459,6 +1459,85 @@ is slower - but it is correct, which the previous behaviour was not. G41 impleme
 mask/scale/max_bias properly in the kernel and lifts the restriction.
 <!-- G37_STATUS_END -->
 
+<!-- G38_STATUS_START -->
+## G38 status: Fermi grid-limit clamps across the older kernels
+
+Status: **implemented, NOT yet verified on hardware.** Needs a regression run on the
+GTX 560 before this is marked PASS.
+
+On compute capability 2.x the maximum `gridDim.x` is 65535 (2^31-1 only from sm_30).
+At 256 threads/block that ceiling is hit at ~16.7M work items - a 4096x4096 tensor,
+i.e. an ordinary weight matrix. Every smoke test in this directory used small shapes,
+so the unclamped launches survived from G9 to G38 unnoticed.
+
+**Failure mode, stated precisely.** Every launcher here checks `cudaGetLastError()`
+straight after its launch, so an over-limit grid is rejected with
+`cudaErrorInvalidConfiguration` and comes back as a dispatch error. That is loud, not
+silent - an earlier draft of `docs/backport-cuda8.md` claimed otherwise and was wrong.
+The genuinely silent variant is *clamping without a stride loop*: the launch then
+succeeds and quietly computes only the first 65535 blocks' worth of output. Both are
+covered below.
+
+Validated G38 checkpoints:
+
+- **G38A**: `ggml-cuda8-grid.cuh` added - `ggml_cuda8_grid_1d()` and
+  `ggml_cuda8_grid_rows()`, plus the rules for pairing them with a stride loop.
+- **G38B**: 14 launches converted across 9 files.
+- **G38C**: `ggml-cuda8-oversized-smoke` added.
+- **G38D**: `-DGGML_CUDA8_PTXAS_VERBOSE=ON` added for the register baseline.
+- **G38E**: *pending* - full regression on GTX 560.
+
+Two patterns, both requiring the kernel-side loop AND the host-side clamp (the clamp
+alone would drop the work that does not fit in the first 65535 blocks):
+
+    element-wise:
+        const int stride = blockDim.x * gridDim.x;
+        for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < n; i += stride)
+        launch with ggml_cuda8_grid_1d(n, block_size)
+
+    one block per row:
+        for (int row = blockIdx.x; row < nrows; row += gridDim.x)
+        launch with ggml_cuda8_grid_rows(nrows)
+
+Converted: `add.cu`, `mul.cu` (x2), `scalar.cu` (x2), `rope.cu`, `getrows.cu`,
+`diagmask.cu`, `reduce.cu` (x2), `softmax.cu`, `rms-norm.cu`, `mmv.cu` (x2), and the
+K-quant `GET_ROWS` in `q4k.cu` / `q6k.cu`. The Q4_K/Q6_K and Q8_0 MUL_MAT kernels
+already used a 2D grid and were left alone.
+
+Two hazards worth recording, both specific to putting a loop around a kernel body
+that was written to run once:
+
+1. **Early `return` becomes a deadlock.** `softmax.cu` opened with
+   `if (row >= rows) return;`. Inside a row loop that would let a thread skip the
+   `__syncthreads()` its block-mates are waiting on. Removed in favour of the loop
+   bound, which is uniform across the block.
+
+2. **Shared-memory reuse across iterations.** Every kernel carrying reduction scratch
+   (`softmax.cu`, `reduce.cu` x2, `rms-norm.cu`, `mmv.cu` block kernel) now
+   `__syncthreads()` at the end of each iteration, before the next one overwrites
+   `partial[tid]` / `sdata[tid]`.
+
+Signature changes (all file-local, no external callers):
+- `kernel_rms_norm_f32` gained `nrows`
+- `kernel_diag_mask_inf_f32` gained `nrows`; its index arithmetic moved to `size_t`,
+  which was an independent latent overflow (`row * ncols` in `int`)
+- `kernel_get_rows_q4k` / `kernel_get_rows_q6k` gained `n_tokens`
+
+New smoke: `ggml-cuda8-oversized-smoke`
+
+    elementwise  n = 65535*256 + 4096   ADD_F32, MUL_SCALAR_F32   (~200 MiB, skipped if VRAM is short)
+    row kernels  rows = 70000           REDUCE_SUM_ROWS, SOFTMAX_ROWS, RMS_NORM
+    get_rows     n_tokens = 70000       GET_ROWS_F32
+
+Output buffers are poisoned with `0xFF` before each launch, and the checks look
+*past* the 65535-block boundary rather than at element 0 - a clamp-without-loop bug
+produces correct output at the start and stale poison after it.
+
+Register baseline (`-DGGML_CUDA8_PTXAS_VERBOSE=ON`) is wired up but **not yet
+measured**. sm_2x caps registers at 63 per thread; the K-quant kernels dequantize a
+whole block into registers, so they are the ones to look at first.
+<!-- G38_STATUS_END -->
+
 
 
 

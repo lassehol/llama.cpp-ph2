@@ -10,6 +10,8 @@
 #include <cstdio>
 #include <float.h>
 
+#include "ggml-cuda8-grid.cuh"
+
 static const int GGML_CUDA8_REDUCE_BLOCK_SIZE = 128;
 
 static __device__ void ggml_cuda8_reduce_sum_128(float * partial, int tid) {
@@ -64,28 +66,31 @@ static __global__ void ggml_cuda8_reduce_sum_rows_f32_kernel(
     int rows,
     int cols
 ) {
-    const int row = blockIdx.x;
     const int tid = threadIdx.x;
 
     __shared__ float partial[GGML_CUDA8_REDUCE_BLOCK_SIZE];
 
-    float sum = 0.0f;
-
-    if (row < rows) {
+    // G38: row-stride - the grid is clamped to 65535 blocks on Fermi.
+    for (int row = blockIdx.x; row < rows; row += gridDim.x) {
         const float * row_ptr = src + (size_t) row * cols;
+
+        float sum = 0.0f;
 
         for (int c = tid; c < cols; c += GGML_CUDA8_REDUCE_BLOCK_SIZE) {
             sum += row_ptr[c];
         }
-    }
 
-    partial[tid] = sum;
-    __syncthreads();
+        partial[tid] = sum;
+        __syncthreads();
 
-    ggml_cuda8_reduce_sum_128(partial, tid);
+        ggml_cuda8_reduce_sum_128(partial, tid);
 
-    if (tid == 0 && row < rows) {
-        dst[row] = partial[0];
+        if (tid == 0) {
+            dst[row] = partial[0];
+        }
+
+        // Guard the next iteration's partial[tid] write.
+        __syncthreads();
     }
 }
 
@@ -95,29 +100,32 @@ static __global__ void ggml_cuda8_reduce_max_rows_f32_kernel(
     int rows,
     int cols
 ) {
-    const int row = blockIdx.x;
     const int tid = threadIdx.x;
 
     __shared__ float partial[GGML_CUDA8_REDUCE_BLOCK_SIZE];
 
-    float vmax = -FLT_MAX;
-
-    if (row < rows) {
+    // G38: row-stride - the grid is clamped to 65535 blocks on Fermi.
+    for (int row = blockIdx.x; row < rows; row += gridDim.x) {
         const float * row_ptr = src + (size_t) row * cols;
+
+        float vmax = -FLT_MAX;
 
         for (int c = tid; c < cols; c += GGML_CUDA8_REDUCE_BLOCK_SIZE) {
             const float x = row_ptr[c];
             vmax = vmax > x ? vmax : x;
         }
-    }
 
-    partial[tid] = vmax;
-    __syncthreads();
+        partial[tid] = vmax;
+        __syncthreads();
 
-    ggml_cuda8_reduce_max_128(partial, tid);
+        ggml_cuda8_reduce_max_128(partial, tid);
 
-    if (tid == 0 && row < rows) {
-        dst[row] = partial[0];
+        if (tid == 0) {
+            dst[row] = partial[0];
+        }
+
+        // Guard the next iteration's partial[tid] write.
+        __syncthreads();
     }
 }
 
@@ -134,7 +142,7 @@ extern "C" int ggml_cuda8_reduce_sum_rows_f32_launch(
         return -1;
     }
 
-    ggml_cuda8_reduce_sum_rows_f32_kernel<<<rows, GGML_CUDA8_REDUCE_BLOCK_SIZE>>>(
+    ggml_cuda8_reduce_sum_rows_f32_kernel<<<ggml_cuda8_grid_rows(rows), GGML_CUDA8_REDUCE_BLOCK_SIZE>>>(
         src,
         dst,
         rows,
@@ -173,7 +181,7 @@ extern "C" int ggml_cuda8_reduce_max_rows_f32_launch(
         return -1;
     }
 
-    ggml_cuda8_reduce_max_rows_f32_kernel<<<rows, GGML_CUDA8_REDUCE_BLOCK_SIZE>>>(
+    ggml_cuda8_reduce_max_rows_f32_kernel<<<ggml_cuda8_grid_rows(rows), GGML_CUDA8_REDUCE_BLOCK_SIZE>>>(
         src,
         dst,
         rows,
