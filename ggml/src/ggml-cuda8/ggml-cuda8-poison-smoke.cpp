@@ -66,6 +66,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 #include <vector>
 #include <cuda_runtime.h>
 // G-fix: ggml_cuda8_ggml_backend_device_is_poisoned() was added alongside
