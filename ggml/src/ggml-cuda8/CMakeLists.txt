@@ -339,7 +339,7 @@ cuda_add_executable(ggml-cuda8-softmax-smoke
     ggml-cuda8-softmax-smoke.cpp
 )
 cuda_add_executable(ggml-cuda8-softmax-ext-smoke
-    ggml-cuda8-softmax-ext-smoke.cu
+    ggml-cuda8-softmax-ext-smoke.cpp
 )
 target_link_libraries(ggml-cuda8-softmax-ext-smoke
     ggml-cuda8-kernels
