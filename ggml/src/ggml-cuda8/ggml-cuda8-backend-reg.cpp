@@ -229,13 +229,31 @@ static bool ggml_backend_cuda8_device_supports_op(ggml_backend_dev_t dev,
 
 static bool ggml_backend_cuda8_device_supports_op_impl(const struct ggml_tensor * op) {
     switch (op->op) {
-        // no-ops (metadata only)
-        case GGML_OP_NONE:
-        case GGML_OP_RESHAPE:
-        case GGML_OP_VIEW:
-        case GGML_OP_PERMUTE:
-        case GGML_OP_TRANSPOSE:
+        case GGML_OP_MUL_MAT: {
+            if (!op->src[0] || !op->src[1]) return false;
+            if (op->type != GGML_TYPE_F32) return false;
+            if (op->src[1]->type != GGML_TYPE_F32) return false;
+            if (op->src[0]->type == GGML_TYPE_Q8_0 ||
+                op->src[0]->type == GGML_TYPE_Q4_K ||
+                op->src[0]->type == GGML_TYPE_Q6_K) {
+                return true;
+            }
+            // G42: batched F32xF32 (attention matmuls). Re-validates shape
+            // independently rather than trusting the dispatcher alone.
+            if (op->src[0]->type != GGML_TYPE_F32) return false;
+            if (op->src[0]->nb[0] != sizeof(float)) return false;
+            if (op->src[1]->nb[0] != sizeof(float)) return false;
+            if (op->nb[0] != sizeof(float)) return false;
+            if (op->src[0]->ne[0] != op->src[1]->ne[0]) return false;
+            if (op->src[0]->ne[2] <= 0 || op->src[0]->ne[3] <= 0) return false;
+            if (op->src[1]->ne[2] % op->src[0]->ne[2] != 0) return false;
+            if (op->src[1]->ne[3] % op->src[0]->ne[3] != 0) return false;
+            if (op->ne[0] != op->src[0]->ne[1]) return false;
+            if (op->ne[1] != op->src[1]->ne[1]) return false;
+            if (op->ne[2] != op->src[1]->ne[2]) return false;
+            if (op->ne[3] != op->src[1]->ne[3]) return false;
             return true;
+        }
 
         // F32 element-wise
         case GGML_OP_ADD:

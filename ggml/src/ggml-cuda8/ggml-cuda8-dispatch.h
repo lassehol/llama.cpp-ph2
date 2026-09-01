@@ -40,7 +40,11 @@ enum ggml_cuda8_op_id {
     GGML_CUDA8_OP_MUL_BROADCAST_F32,
 
     GGML_CUDA8_OP_ROPE_F32,
-
+	    // G42: batched, broadcast-aware F32xF32 MUL_MAT - the attention
+    // matmuls (K.Q, probs.V). Not to be confused with the quantized-weight
+    // MUL_MAT paths (Q8_0/Q4_K/Q6_K) above.
+    GGML_CUDA8_OP_MUL_MAT_F32_F32,
+	
     GGML_CUDA8_OP_CONT_F32,
 
     GGML_CUDA8_OP_DIAG_MASK_INF_F32,

@@ -145,6 +145,8 @@ cuda_add_library(ggml-cuda8-kernels STATIC
     ggml-cuda8-softmax.cu
 	ggml-cuda8-softmax-ext.cpp
     ggml-cuda8-softmax-ext.cu
+    ggml-cuda8-mulmat-f32.cpp
+    ggml-cuda8-mulmat-f32.cu
     ggml-cuda8-rms-norm.cu
     ggml-cuda8-mul.cu
     ggml-cuda8-rope.cu
@@ -1335,3 +1337,11 @@ target_link_libraries(ggml-cuda8-poison-smoke
 )
 set_target_properties(ggml-cuda8-poison-smoke PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+# -- G42: batched F32xF32 MUL_MAT smoke ---------------------------------------
+cuda_add_executable(ggml-cuda8-mulmat-f32-smoke
+    ggml-cuda8-mulmat-f32-smoke.cpp
+)
+target_link_libraries(ggml-cuda8-mulmat-f32-smoke
+    ggml-cuda8-kernels
+    ${CUDA_LIBRARIES}
+)

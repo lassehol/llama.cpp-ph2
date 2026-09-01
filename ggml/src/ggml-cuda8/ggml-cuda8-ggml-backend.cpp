@@ -329,6 +329,14 @@ static enum ggml_status cuda8_backend_graph_compute(ggml_backend_t backend, stru
                 } else if (src0->type == GGML_TYPE_Q6_K) {
                     cuda8_op = GGML_CUDA8_OP_MUL_MAT_Q6_K_F32;
                     opname = "MUL_MAT_Q6_KxF32";
+                } else if (src0->type == GGML_TYPE_F32) {
+                    // G42: batched attention matmul. Not flattened - kernel
+                    // needs real ne[]/nb[] for broadcast + permuted views.
+                    dispatch_src0 = src0;
+                    dispatch_src1 = src1;
+                    dispatch_dst  = node;
+                    cuda8_op = GGML_CUDA8_OP_MUL_MAT_F32_F32;
+                    opname = "MUL_MAT_F32xF32";
                 } else {
                     std::fprintf(stderr, "ggml-cuda8/backend graph_compute: MUL_MAT node %d unsupported src0 type %d\n", i, (int)src0->type);
                     ggml_cuda8_context_destroy(ctx);
