@@ -591,3 +591,122 @@ Full regression after G41: **25/25 pass** (was 24/24 - the new
 `ggml-cuda8-softmax-ext-smoke` target accounts for the difference).
 
 ---
+G42 UPDATE — supersedes the "next steps" framing in
+backport-cuda8-append-2.md (its section 9 and its EDIT 1). Apply IN ADDITION
+TO backport-cuda8-append.md (INSERTION 1/2) and backport-cuda8-append-2.md.
+This file updates the status of what those left open; it does not repeat
+their content.
+
+---
+
+EDIT 1 — in backport-cuda8-append-2.md's "INSERTION 3" content (the new
+"### 9. G41" section), its closing paragraph currently ends:
+
+    **G42 is now the next highest-value checkpoint.** ... G42 will likely
+    need to land together with **G46** ... A fresh GGML_CUDA8_DEBUG_OPS=1
+    rejection-log run against a real model (now that G41 has landed) is the
+    recommended first step before committing to G42's exact scope ...
+
+Replace that closing paragraph with:
+
+    G42 has since landed - see section 10 below. It absorbed most of G46
+    (permuted/non-contiguous src1) by taking explicit strides on dims 1-3
+    rather than assuming packed layout, so G46 is no longer a separate
+    blocker for the common attention permuted-view case. With G41+G42 both
+    done, the attention core no longer forces a per-layer CPU fallback in
+    principle. The recommended next step is the GGML_CUDA8_DEBUG_OPS=1
+    re-measurement (now that BOTH have landed), not another kernel - see
+    section 10.
+
+---
+
+EDIT 2 — in the ORIGINAL document, section "### 5. Proposed G37+ order",
+the table row for G42 currently reads:
+
+| **G42** | Wire the existing F32xF32 matvec (mmv.cu:210) into dispatch + supports_op | Kernel already written and benched - near-free win for the attention matmuls. |
+
+Replace with:
+
+| ~~**G42**~~ | ~~Wire the existing F32xF32 matvec (mmv.cu:210)~~ Batched F32xF32 MUL_MAT, purpose-built kernel | **DONE — PASS on GTX 560, 26/26.** The vector kernel was NOT reusable (see G39 correction / section 10): real attention matmuls are batched, 3D, permuted. New kernel handles GQA broadcast + dims-1-3 strides. See ggml-cuda8/README.md G42 and section 10. |
+
+---
+
+EDIT 3 — in the ORIGINAL document, section "### 2.1 MUL_MAT — much improved,
+two gaps left", the remaining-gaps table. The "F32 x F32 not wired" row and
+the "Permuted / non-contiguous src1, 3D+ shapes" row are both now largely
+addressed. Update them:
+
+- "F32 x F32 not wired" row: strike through and mark **DONE (G42)**. Note
+  that the claim in its "Why it matters" cell ("The kernels already exist
+  (mmv.cu:210) - they just need a dispatch op id") was wrong; see the G39
+  correction. G42 added a purpose-built batched kernel.
+- "Permuted / non-contiguous src1, 3D+ shapes" row: mark **mostly addressed
+  by G42**. G42 takes explicit strides on dims 1-3, so permuted views with
+  contiguous dim 0 (the common attention case) work. Only fully arbitrary
+  dim-0 strides remain out of scope, refused to CPU.
+
+The F16 src0 row is unchanged (still needs G49).
+
+---
+
+EDIT 4 — new top-level section, place at the end of the document, after
+section "### 9. G41" (from backport-cuda8-append-2.md) and before the
+closing italic attribution line:
+
+---
+
+### 10. G42: batched F32xF32 MUL_MAT (attention matmuls)
+
+The second half of the G41+G42 "single unit of work". A new dispatch op,
+`GGML_CUDA8_OP_MUL_MAT_F32_F32`, with a purpose-built batched, broadcast-aware
+kernel for the K.Q and probs.V matmuls - full detail in ggml-cuda8/README.md
+G42.
+
+**The G39 correction, now confirmed in code.** Section 2.1 originally
+described this as wiring an already-written vector kernel (mmv.cu:210). That
+was wrong, as the G39 re-measurement first flagged: real attention matmuls
+are per-head batched and 3D (ne02/ne03), frequently on permuted views. The
+vector matvec is the wrong shape. G42 adds a new kernel instead. The
+mmv.cu:210 vector kernel remains unused by any dispatch op.
+
+**Scope absorbed most of G46.** The kernel requires contiguous dim 0 (the
+reduction dimension) but takes explicit strides on dims 1-3, so permuted
+views - attention's common case after reshape+permute, which reorders
+head/token/batch but leaves dim 0 alone - are handled without a separate
+CONT copy. Fully arbitrary dim-0 strides are refused to CPU. This means G46
+(permuted/non-contiguous src1) is largely closed as a side effect; only the
+dim-0-strided remainder is still open, and it may never matter in practice.
+
+**Two build-integration snags, both instructive** (recorded because they
+are the kind of thing that recurs when editing the supports_op switch):
+1. A duplicate `case GGML_OP_MUL_MAT` (new merged case added at the top of
+   the switch, old quantized-only case not removed) - GCC "duplicate case
+   value". Fixed by deleting the stale case.
+2. Collateral loss of the NONE/RESHAPE/VIEW/PERMUTE/TRANSPOSE no-op group,
+   which sat exactly where the new MUL_MAT block was inserted. supports_op
+   started refusing all five metadata-only ops - worse than a test failure,
+   it would split the graph around every reshape in a real run. Caught by
+   the supports-op-smoke fixture and fixed by re-adding the group. The
+   fixture is load-bearing for exactly this.
+
+Full regression after G42: **26/26 pass** (was 25/25 - the new
+`ggml-cuda8-mulmat-f32-smoke` target accounts for the difference).
+
+**Next step is measurement, not code.** G41+G42 close the attention core in
+principle. Before the next kernel, re-run the G39-style rejection log now
+that both have landed:
+
+```
+GGML_CUDA8_DEBUG_OPS=1 <llama-cli / rpc-server invocation, Q4_K model>
+```
+
+The log confirms what the smoke suite cannot: whether a real attention graph
+actually takes the G42 path or hits a dim-0-strided layout it refuses;
+whether GGML_OP_SCALE / broadcast-ADD (G44) are now the top refusals; and
+whether any new op surfaces once the graph stops splitting at attention. If
+the log is clean or close, priority order is G44 (SCALE, broadcast ADD),
+then G49 (F16 storage - unblocked per section 7), then G50 (perf, only once
+the graph stops splitting). The G38 register-spill baseline (section 3.3)
+remains open and independent.
+
+---

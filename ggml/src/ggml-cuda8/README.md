@@ -2362,6 +2362,158 @@ against a real model now that G41 has landed, to get fresh data before
 committing to G42's exact scope.
 
 
+### G42 status: batched F32xF32 MUL_MAT (attention matmuls)
+
+Status: **PASS on GTX 560 / CUDA 8 / Fermi** (26/26 regression).
+
+G42 implements the second half of the "single unit of work" the G39
+re-measurement identified: the attention matmuls (K.Q and probs.V), which
+operate on activations rather than weights and so were never covered by the
+quantized-weight MUL_MAT paths (Q8_0/Q4_K/Q6_K) or the vector matvec kernels
+in mmv.cu. Together with G41 (SOFT_MAX_EXT), this covers both refusals the
+G39 log showed dominating every attention block - in principle the attention
+core no longer forces a CPU fallback per layer.
+
+#### What was added
+
+A new dispatch op, `GGML_CUDA8_OP_MUL_MAT_F32_F32`, and a new kernel
+(`ggml-cuda8-mulmat-f32.cu`) that is batched and broadcast-aware, distinct
+from both the quantized-weight MUL_MAT paths and the F32 vector matvec in
+mmv.cu (which no dispatch op maps to - that gap noted in backport-cuda8.md
+is what G42 fills, though not by wiring the existing vector kernel; see
+below).
+
+Semantics match `ggml_mul_mat(a=src0, b=src1)`:
+```
+dst[i01,i11,i12,i13] = sum_c src0[c,i01,i12/r2,i13/r3] * src1[c,i11,i12,i13]
+```
+where `r2 = ne12/ne02`, `r3 = ne13/ne03` are the GQA-style head-broadcast
+ratios (src0, the K/V operand, has fewer heads than src1, the Q/probs
+operand, and repeats to match).
+
+New dispatch op: `GGML_CUDA8_OP_MUL_MAT_F32_F32` (23 dispatch ops now).
+
+New files: `ggml-cuda8-mulmat-f32.h`, `ggml-cuda8-mulmat-f32.cu`,
+`ggml-cuda8-mulmat-f32.cpp`, `ggml-cuda8-mulmat-f32-smoke.cpp`.
+
+#### The G39 correction stands: the vector kernel was NOT reusable
+
+The original G42 plan (backport-cuda8.md 2.1) described the F32xF32 kernel
+as already written (mmv.cu:210), needing "just a dispatch op id and a
+supports_op entry". The G39 re-measurement corrected that: real attention
+matmuls are per-head batched and 3D (ne02/ne03), often on permuted views -
+strictly matrix-times-vector is not the shape attention actually needs. G42
+follows the corrected understanding and adds a purpose-built batched kernel
+rather than wiring the vector one.
+
+#### Scope: contiguous dim-0, arbitrary dims 1-3 (absorbs most of G46)
+
+The kernel requires dim 0 (the reduction dimension) contiguous on both
+src0 and src1 (`nb[0] == sizeof(float)`), but takes explicit byte strides
+for dims 1-3 rather than assuming a packed layout. This is a deliberate
+scope choice: attention's permute() typically reorders the head/token/batch
+dims while leaving dim 0 alone, so honouring dims 1-3 strides handles the
+common permuted-view case directly - which is most of what G46
+(permuted/non-contiguous src1) was tracking. Fully arbitrary dim-0 strides
+remain out of scope and are refused (fall back to CPU).
+
+One block per output element via an explicit 2D dim3 grid (grid.x up to
+65535, grid.y for the rest), matching the existing Q4_K/Q6_K MUL_MAT
+kernels' grid construction exactly - NOT the ggml_cuda8_grid_rows() +
+grid-stride-loop pattern, which requires a per-block loop this kernel does
+not have. Shared-memory tree reduction, no warp shuffle, Fermi-safe.
+
+`supports_op` (backend-reg.cpp) independently re-validates the full shape
+contract (reduction dim match, GQA divisibility, dst shape) rather than
+trusting the dispatcher alone - the same double-gate pattern G41/G43/G51
+established.
+
+#### Verification
+
+Seven numerical configurations, each checked against an independently
+re-derived CPU reference (double-precision accumulation reference vs. the
+single-precision kernel; agreement between two separately-written
+implementations is the check, same method G40/G41/G45 used):
+- non-batched (ne02=ne12=1)
+- batched, no broadcast (r2=1, 4 heads)
+- GQA broadcast (ne02=2, ne12=8, r2=4)
+- batch dimension (ne03=2, ne13=2)
+- large reduction dim (ne00=1024, exercises the multi-iteration inner loop)
+- permuted src1/dst (deliberately non-packed nb2, a padded gap between i12
+  slices that only a kernel ignoring the passed strides would read/write
+  wrong - stands in for a permuted view)
+- oversized total_rows (>65535, exercises grid.y)
+
+Plus five `supported()`-gate rejection cases exercised directly (no GPU
+touch): valid batched+broadcast, reduction-dim mismatch, non-integer
+broadcast ratio, dst-shape mismatch, and src0 dim-0 non-contiguous.
+
+All pass on GTX 560 / CUDA 8.0.61 / driver 390.157.
+
+#### Two build-integration snags worth recording (both hit during landing)
+
+1. **Duplicate `case GGML_OP_MUL_MAT`.** The new merged MUL_MAT case
+   (Q8_0/Q4_K/Q6_K early-return plus the F32xF32 path) was added at the top
+   of supports_op's switch while the original quantized-only case was left
+   in place further down - two `case` labels for the same value in one
+   switch, which GCC rejects as "duplicate case value". Fixed by deleting
+   the now-redundant original block. Lesson: a "replace this case" edit must
+   verify the old case is actually gone, not just that the new one is
+   present.
+
+2. **Collateral loss of the no-op cases.** Inserting the new MUL_MAT block
+   at the top of the switch landed exactly where the
+   NONE/RESHAPE/VIEW/PERMUTE/TRANSPOSE group used to sit, and that group was
+   dropped in the process - so supports_op started returning false for all
+   five metadata-only ops (they fell through to default: return false).
+   This is worse than a test failure: in a real run it would force graph
+   splits around every reshape/view/permute/transpose. Caught by the
+   supports-op-smoke fixture (the five no-op TRUE cases went red), fixed by
+   re-adding the group. Lesson: the supports-op-smoke fixture is load-bearing
+   for exactly this kind of collateral damage - trust its red before
+   assuming the failure is a stale fixture.
+
+#### Fixture update in ggml-cuda8-ggml-backend-supports-op-smoke
+
+Same pattern as G41: one `MUL_MAT (F32xF32)` fixture that used to correctly
+expect `false` now correctly expects `true`, because its shapes
+(src0=[128,64], src1=[128,1], dst=[64,1], no broadcast) satisfy G42's
+batched-matmul contract exactly. Moved to the TRUE section and relabelled
+`MUL_MAT (F32xF32, batched)`. A new FALSE case, `MUL_MAT (F32xF32, ne00
+mismatch)`, was added so negative coverage for the op is not lost (src0 and
+src1 disagree on the reduction dimension).
+
+#### Regression
+
+Full container regression: **26/26 pass** (was 25/25 after G41 - the new
+`ggml-cuda8-mulmat-f32-smoke` target accounts for the difference).
+
+#### What's next: MEASURE before the next kernel
+
+G41+G42 together were the attention-core unit of work. The correct next
+step is not another kernel but a re-measurement, following the same
+"measure before optimizing" principle G39 established:
+
+```
+GGML_CUDA8_DEBUG_OPS=1 <llama-cli / rpc-server invocation with a Q4_K model>
+```
+
+prints the `ops refused by supports_op (ran on CPU), by frequency` summary
+at exit. That log is the authoritative answer to what is left, and there
+are things only it can confirm that the smoke suite cannot:
+- whether a real attention graph actually takes the G42 path, or hits a
+  dim-0-strided layout G42 refuses (scope limit above) and still falls back;
+- whether GGML_OP_SCALE / broadcast-ADD (G44) are now the top refusals;
+- whether any new op type surfaces now that the graph reaches deeper into
+  the model without splitting at attention.
+
+If the log is clean or close to it, the priority order below G42 is: G44
+(SCALE, broadcast ADD - cheap leaf splits), then G49 (F16 storage - already
+unblocked per section 7, removes the --cache-type f32 workaround), then G50
+(perf: occupancy/block-size, only meaningful once the graph stops
+splitting). The G38 register-spill baseline (section 3.3) also remains open
+and is independent of all of the above.
+
 
 
 
