@@ -19,6 +19,7 @@
 #include "ggml-cuda8-ggml-buffer.h"
 #include "q8_0-mmv.cuh"
 #include <cstdio>
+#include "ggml-cuda8-softmax-ext.h"
 // Forward declarations for K-quant dispatch functions
 static int supported_mul_mat_q4k_f32(const struct ggml_cuda8_context*, const struct ggml_tensor*, const struct ggml_tensor*, const struct ggml_tensor*);
 static int supported_mul_mat_q6k_f32(const struct ggml_cuda8_context*, const struct ggml_tensor*, const struct ggml_tensor*, const struct ggml_tensor*);
@@ -106,6 +107,7 @@ const char * ggml_cuda8_op_name(int op_id) {
         case GGML_CUDA8_OP_GET_ROWS_Q6_K:    return "GET_ROWS_Q6_K";
         case GGML_CUDA8_OP_SWIGLU_F32:       return "SWIGLU_F32";
         case GGML_CUDA8_OP_SET_ROWS_F32:     return "SET_ROWS_F32";
+		case GGML_CUDA8_OP_SOFTMAX_EXT_F32: return "SOFTMAX_EXT_F32";
         default:                                  return "UNKNOWN";
     }
 }
@@ -610,6 +612,8 @@ int ggml_cuda8_dispatch_supported(
             return ggml_cuda8_supported_swiglu_f32(ctx, src0, src1, dst);
         case GGML_CUDA8_OP_SET_ROWS_F32:
             return ggml_cuda8_supported_set_rows_f32(ctx, src0, src1, dst);
+		case GGML_CUDA8_OP_SOFTMAX_EXT_F32:
+			return ggml_cuda8_supported_softmax_ext_f32(ctx, src0, src1, dst);
         default:
             return 0;
     }
@@ -681,6 +685,8 @@ int ggml_cuda8_dispatch_execute(
             return ggml_cuda8_exec_swiglu_f32(ctx, src0, src1, dst);
         case GGML_CUDA8_OP_SET_ROWS_F32:
             return ggml_cuda8_exec_set_rows_f32(ctx, src0, src1, dst);
+		case GGML_CUDA8_OP_SOFTMAX_EXT_F32:
+			return ggml_cuda8_exec_softmax_ext_f32(ctx, src0, src1, dst);
         default:
             return -1;
     }

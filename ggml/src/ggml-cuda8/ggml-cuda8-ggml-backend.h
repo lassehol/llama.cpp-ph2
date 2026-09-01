@@ -53,6 +53,17 @@ static inline int ggml_cuda8_soft_max_is_plain(const struct ggml_tensor * op) {
     return 1;
 }
 
+// G41: complements ggml_cuda8_soft_max_is_plain(). A node failing is_plain()
+// may still be safely claimed unless it carries attention sinks (src[2]) or
+// a non-F32 mask - neither implemented here, both refused rather than
+// silently ignored.
+static inline int ggml_cuda8_soft_max_is_supported_ext(const struct ggml_tensor * op) {
+    if (op == NULL) return 0;
+    if (op->src[2] != NULL) return 0;
+    if (op->src[1] != NULL && op->src[1]->type != GGML_TYPE_F32) return 0;
+    return 1;
+}
+
 #ifdef __cplusplus
 extern "C" {
 #endif

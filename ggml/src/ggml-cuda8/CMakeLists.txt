@@ -143,6 +143,8 @@ cuda_add_library(ggml-cuda8-kernels STATIC
     ggml-cuda8-reduce.cu
     ggml-cuda8-softmax.cpp
     ggml-cuda8-softmax.cu
+	ggml-cuda8-softmax-ext.cpp
+    ggml-cuda8-softmax-ext.cu
     ggml-cuda8-rms-norm.cu
     ggml-cuda8-mul.cu
     ggml-cuda8-rope.cu
@@ -335,6 +337,13 @@ target_link_libraries(ggml-cuda8-reduce-max-smoke
 )
 cuda_add_executable(ggml-cuda8-softmax-smoke
     ggml-cuda8-softmax-smoke.cpp
+)
+cuda_add_executable(ggml-cuda8-softmax-ext-smoke
+    ggml-cuda8-softmax-ext-smoke.cu
+)
+target_link_libraries(ggml-cuda8-softmax-ext-smoke
+    ggml-cuda8-kernels
+    ${CUDA_LIBRARIES}
 )
 target_link_libraries(ggml-cuda8-softmax-smoke
     ggml-cuda8-kernels

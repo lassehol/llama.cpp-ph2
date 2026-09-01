@@ -278,27 +278,31 @@ static enum ggml_status cuda8_backend_graph_compute(ggml_backend_t backend, stru
                     return (enum ggml_status) -1;
                 }
             } break;
-            case GGML_OP_SOFT_MAX: {
-                if (!cuda8_graph_is_f32(node) || !cuda8_graph_is_f32(src0)) {
-                    std::fprintf(stderr, "ggml-cuda8/backend graph_compute: SOFT_MAX node %d has unsupported types/sources\n", i);
-                    ggml_cuda8_context_destroy(ctx);
-                    return (enum ggml_status) -1;
-                }
-                // G37: the kernel is a plain row-wise softmax. Fail loudly rather
-                // than silently ignoring a mask / sinks / scale / max_bias. This
-                // should be unreachable - supports_op refuses these nodes - so
-                // reaching it means the scheduler bypassed supports_op.
-                if (!ggml_cuda8_soft_max_is_plain(node)) {
-                    std::fprintf(stderr,
-                        "ggml-cuda8/backend graph_compute: SOFT_MAX node %d uses soft_max_ext features "
-                        "(mask=%p sinks=%p scale/max_bias in op_params) that the CUDA8 kernel does not implement\n",
-                        i, (void *) node->src[1], (void *) node->src[2]);
-                    ggml_cuda8_context_destroy(ctx);
-                    return (enum ggml_status) -1;
-                }
-                cuda8_op = GGML_CUDA8_OP_SOFTMAX_ROWS_F32;
-                opname = "SOFTMAX_ROWS_F32";
-            } break;
+			case GGML_OP_SOFT_MAX: {
+				if (!cuda8_graph_is_f32(node) || !cuda8_graph_is_f32(src0)) {
+					std::fprintf(stderr, "ggml-cuda8/backend graph_compute: SOFT_MAX node %d has unsupported types/sources\n", i);
+					ggml_cuda8_context_destroy(ctx);
+					return (enum ggml_status) -1;
+				}
+				if (ggml_cuda8_soft_max_is_plain(node)) {
+					// Fast path, unchanged since before G41 - every existing
+					// plain-softmax pipeline (G16C, G19A, G32A, ...) still takes this.
+					cuda8_op = GGML_CUDA8_OP_SOFTMAX_ROWS_F32;
+					opname = "SOFTMAX_ROWS_F32";
+				} else if (ggml_cuda8_soft_max_is_supported_ext(node)) {
+					// G41: mask/scale/ALiBi. dispatch_src0/src1/dst are already src0/
+					// src1(mask)/node by default - not flattened, same as ROPE/
+					// DIAG_MASK_INF/SWIGLU, since the kernel needs the real shape.
+					cuda8_op = GGML_CUDA8_OP_SOFTMAX_EXT_F32;
+					opname = "SOFTMAX_EXT_F32";
+				} else {
+					std::fprintf(stderr,
+						"ggml-cuda8/backend graph_compute: SOFT_MAX node %d uses features "
+						"this backend does not implement (attention sinks and/or non-F32 mask)\n", i);
+					ggml_cuda8_context_destroy(ctx);
+					return (enum ggml_status) -1;
+				}
+			} break;
             case GGML_OP_SUM_ROWS: {
                 if (!cuda8_graph_is_f32(node) || !cuda8_graph_is_f32(src0)) {
                     std::fprintf(stderr, "ggml-cuda8/backend graph_compute: SUM_ROWS node %d has unsupported types/sources\n", i);

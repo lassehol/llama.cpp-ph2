@@ -255,10 +255,21 @@ static bool ggml_backend_cuda8_device_supports_op_impl(const struct ggml_tensor 
         // max_bias) - the kernel ignores all of them, so claiming those nodes
         // would silently produce wrong attention weights. See
         // ggml_cuda8_soft_max_is_plain().
-        case GGML_OP_SOFT_MAX:
-            return (op->type == GGML_TYPE_F32 &&
-                    op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
-                    ggml_cuda8_soft_max_is_plain(op));
+		case GGML_OP_SOFT_MAX: {
+			if (op->type != GGML_TYPE_F32) return false;
+			if (!op->src[0] || op->src[0]->type != GGML_TYPE_F32) return false;
+			if (ggml_cuda8_soft_max_is_plain(op)) return true;
+			// G41: "proper" masked/scaled/ALiBi-biased case.
+			if (!ggml_cuda8_soft_max_is_supported_ext(op)) return false;  // sinks / F16 mask
+			if (op->src[1] != NULL) {
+				const struct ggml_tensor * mask = op->src[1];
+				if (mask->ne[0] != op->src[0]->ne[0]) return false;
+				if (mask->ne[1] != op->src[0]->ne[1]) return false;
+				if (mask->ne[2] != 1 && mask->ne[2] != op->src[0]->ne[2]) return false;
+				if (mask->ne[3] != 1 && mask->ne[3] != op->src[0]->ne[3]) return false;
+			}
+			return true;
+		}
 
         // row reductions
         case GGML_OP_SUM_ROWS:
