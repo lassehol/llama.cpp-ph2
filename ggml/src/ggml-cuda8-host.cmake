@@ -16,13 +16,27 @@ if (NOT GGML_CUDA8_LIB_DIR)
     set(GGML_CUDA8_LIB_DIR "${CMAKE_SOURCE_DIR}/build-cuda8-parent")
 endif()
 
-set(_CUDA8_KERNELS "${GGML_CUDA8_LIB_DIR}/ggml/src/ggml-cuda8/libggml-cuda8-kernels.a")
 set(_CUDA8_LIBS    "${GGML_CUDA8_LIB_DIR}/cuda8-libs")
 set(_CUDA8_HEADERS "${GGML_CUDA8_LIB_DIR}/cuda8-headers")
 
-if (NOT EXISTS "${_CUDA8_KERNELS}")
-    message(FATAL_ERROR "CUDA8 kernel library not found: ${_CUDA8_KERNELS}\n"
-                        "Build it first inside the CUDA8 Docker container.")
+# Two layouts, depending on how the container built the kernels:
+#   nested - configured against the repo root (-DGGML_CUDA8=ON)
+#   flat   - configured standalone from ggml/src/ggml-cuda8, which is the only
+#            option when the container's cmake is older than 3.14
+set(_CUDA8_KERNELS_NESTED "${GGML_CUDA8_LIB_DIR}/ggml/src/ggml-cuda8/libggml-cuda8-kernels.a")
+set(_CUDA8_KERNELS_FLAT   "${GGML_CUDA8_LIB_DIR}/libggml-cuda8-kernels.a")
+
+if (EXISTS "${_CUDA8_KERNELS_NESTED}")
+    set(_CUDA8_KERNELS "${_CUDA8_KERNELS_NESTED}")
+elseif (EXISTS "${_CUDA8_KERNELS_FLAT}")
+    set(_CUDA8_KERNELS "${_CUDA8_KERNELS_FLAT}")
+else()
+    message(FATAL_ERROR
+        "CUDA8 kernel library not found. Looked in:\n"
+        "  ${_CUDA8_KERNELS_NESTED}\n"
+        "  ${_CUDA8_KERNELS_FLAT}\n"
+        "Build it first inside the CUDA8 container, then point GGML_CUDA8_LIB_DIR "
+        "at that build directory.")
 endif()
 
 message(STATUS "  kernel lib:  ${_CUDA8_KERNELS}")

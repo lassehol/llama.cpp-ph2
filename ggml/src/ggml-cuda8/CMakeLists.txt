@@ -2,6 +2,20 @@ cmake_minimum_required(VERSION 3.5)
 
 project(ggml_cuda8_smoke C CXX)
 
+# This directory is configured two ways:
+#   - as a subdirectory of the parent llama.cpp project (-DGGML_CUDA8=ON), which
+#     needs cmake >= 3.14 and so cannot be done in the CUDA 8 container
+#   - standalone, directly in the CUDA 8 container, which only needs cmake 3.5
+#
+# Standalone, the parent never runs, so supply the two variables it would
+# otherwise define. ../ggml.c requires both to be defined at compile time.
+if (NOT DEFINED GGML_VERSION OR GGML_VERSION STREQUAL "")
+    set(GGML_VERSION "0.0.0-cuda8-standalone")
+endif()
+if (NOT DEFINED GGML_COMMIT OR GGML_COMMIT STREQUAL "")
+    set(GGML_COMMIT "unknown")
+endif()
+
 # CMake 3.5 + CUDA 8 compatible path.
 # Do not use enable_language(CUDA) here.
 find_package(CUDA REQUIRED)
