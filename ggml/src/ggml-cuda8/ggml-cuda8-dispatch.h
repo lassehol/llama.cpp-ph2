@@ -53,6 +53,9 @@ enum ggml_cuda8_op_id {
 
     // G40: SwiGLU gated activation - the FFN. dst = silu(gate) * up.
     GGML_CUDA8_OP_SWIGLU_F32,
+
+    // G43: SET_ROWS scatter - writes the KV cache. dst[idx[i]] = src0[i].
+    GGML_CUDA8_OP_SET_ROWS_F32,
 };
 
 const char * ggml_cuda8_op_name(int op_id);

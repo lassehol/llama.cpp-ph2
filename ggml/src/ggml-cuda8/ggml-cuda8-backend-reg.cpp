@@ -326,6 +326,28 @@ static bool ggml_backend_cuda8_device_supports_op_impl(const struct ggml_tensor 
             return (op->type == GGML_TYPE_F32 &&
                     op->src[0] && op->src[0]->type == GGML_TYPE_F32);
 
+        // G43: SET_ROWS - the KV cache write. Refusing this is fatal rather
+        // than merely slow: the destination is pre-allocated in our buffer, so
+        // the scheduler has nowhere else to put it and aborts. Hence the F32
+        // cache requirement (--cache-type-k/v f32) until G49 adds F16 stores.
+        case GGML_OP_SET_ROWS: {
+            if (op->type != GGML_TYPE_F32) return false;
+            if (!op->src[0] || op->src[0]->type != GGML_TYPE_F32) return false;
+            if (!op->src[1] || op->src[1]->type != GGML_TYPE_I64) return false;
+
+            if (op->ne[0] != op->src[0]->ne[0]) return false;
+            if (op->ne[2] != op->src[0]->ne[2]) return false;
+            if (op->ne[3] != op->src[0]->ne[3]) return false;
+
+            // Index broadcast over dims 2/3, per the CPU reference.
+            if (op->src[1]->ne[1] == 0 || op->src[1]->ne[2] == 0) return false;
+            if (op->src[0]->ne[2] % op->src[1]->ne[1] != 0) return false;
+            if (op->src[0]->ne[3] % op->src[1]->ne[2] != 0) return false;
+            if (op->src[1]->ne[0] < op->src[0]->ne[1]) return false;
+
+            return true;
+        }
+
         // G40: SwiGLU gated activation - the FFN.
         case GGML_OP_GLU: {
             if (op->type != GGML_TYPE_F32) return false;

@@ -403,6 +403,29 @@ static enum ggml_status cuda8_backend_graph_compute(ggml_backend_t backend, stru
                 opname = "SWIGLU_F32";
             } break;
 
+            // G43: SET_ROWS - the KV cache write.
+            case GGML_OP_SET_ROWS: {
+                if (node->type != GGML_TYPE_F32 ||
+                    src0 == NULL || src0->type != GGML_TYPE_F32 ||
+                    src1 == NULL || src1->type != GGML_TYPE_I64) {
+                    std::fprintf(stderr,
+                        "ggml-cuda8/backend graph_compute: SET_ROWS node %d unsupported types "
+                        "(dst=%d src0=%d src1=%d; F16 cache needs G49)\n",
+                        i, (int) node->type,
+                        src0 ? (int) src0->type : -1,
+                        src1 ? (int) src1->type : -1);
+                    ggml_cuda8_context_destroy(ctx);
+                    return (enum ggml_status) -1;
+                }
+
+                dispatch_src0 = src0;
+                dispatch_src1 = src1;
+                dispatch_dst  = node;
+
+                cuda8_op = GGML_CUDA8_OP_SET_ROWS_F32;
+                opname = "SET_ROWS_F32";
+            } break;
+
             default:
                 std::fprintf(stderr, "ggml-cuda8/backend graph_compute: unsupported node %d op=%d\n", i, (int) node->op);
                 ggml_cuda8_context_destroy(ctx);

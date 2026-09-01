@@ -1761,6 +1761,25 @@ drop-in.
 While FA is on, implementing SOFT_MAX and MUL_MAT changes nothing, because those
 nodes are not in the graph.
 
+### Re-measured after G45 (ROPE NeoX) and G40 (SwiGLU)
+
+Same command, same model, after the two big ops landed:
+
+           112  MUL_MAT dst=f32 src0=f32 src1=f32
+            56  SOFT_MAX dst=f32 src0=f32 src1=f32 [soft_max_ext: mask/sinks/scale/max_bias]
+
+Six entries totalling ~8300 became two totalling 168. At 28 layers that is 2 matmuls
+and 1 softmax per layer per pass - **exactly the attention core and nothing else**.
+Embeddings, norms, every quantized projection, rope and the whole FFN are now GPU-side.
+
+The `CPY f32->f16` and `FLASH_ATTN_EXT` entries from the first run are absent because
+this run passed `-fa off` and `--cache-type-k/v f32`; the earlier counts came from the
+auto-fit probe, which builds a context with its own defaults.
+
+Consequence for the roadmap: **G41 (SOFT_MAX_EXT) and G42 (F32 MUL_MAT) are now a
+single unit of work.** They interleave inside the same attention block, so doing only
+one still leaves the graph splitting on every layer.
+
 ### Bug found and fixed: double free during teardown
 
 With `-nkvo -fa off` the run got past the scheduler and printed its memory
@@ -1876,7 +1895,7 @@ New/changed smoke cases:
 <!-- G40_STATUS_START -->
 ## G40 status: SwiGLU (the FFN)
 
-Status: **implemented, NOT yet verified on hardware.**
+Status: **PASS on GTX 560 / CUDA 8 / Fermi** (22/22 regression).
 
 Second in the G39 rejection log at 3080, and the largest block of FLOPs in the model -
 `GGML_OP_GLU` is the whole feed-forward network.
@@ -1931,6 +1950,79 @@ Non-contiguous rows and mismatched gate/up shapes are also refused.
 New files: `ggml-cuda8-swiglu.cu`, `ggml-cuda8-swiglu-smoke.cu`.
 New dispatch op: `GGML_CUDA8_OP_SWIGLU_F32` (20 dispatch ops now).
 <!-- G40_STATUS_END -->
+
+<!-- G43_STATUS_START -->
+## G43 status: SET_ROWS - the KV cache write
+
+Status: **implemented, NOT yet verified on hardware.**
+
+    dst[idx[i]] = src0[i]
+
+Mirrors `ggml_compute_forward_set_rows_impl` (`ggml-cpu/ops.cpp`) for F32 -> F32.
+
+### Why this was reordered ahead of G41/G42
+
+The post-G40 measurement left only two refusals - 112 `MUL_MAT f32xf32` and 56
+`SOFT_MAX soft_max_ext`, the attention core. The obvious next step was to implement
+those two. It would have been wasted work.
+
+`llama-graph.cpp` (build_attn_mha):
+
+    if (!cparams.offload_kqv) {
+        // all nodes between the KV store and the attention output are run on the CPU
+        ggml_backend_sched_set_tensor_backend(sched, cur, backend_cpu);
+    }
+
+and `common/common.cpp:1721`:
+
+    cparams.offload_kqv = !params.no_kv_offload;
+
+So `-nkvo` makes llama.cpp *pin* the attention block to the CPU. Those 168 refusals
+are a consequence of `-nkvo`, not an independent gap: implementing both attention
+kernels would have changed nothing, because llama.cpp would still place attention on
+the CPU - correctly, since with `-nkvo` the KV cache is in host memory and running
+attention on the GPU would mean copying the cache across PCIe every step.
+
+`-nkvo` is required only because SET_ROWS is missing. So SET_ROWS is the unlock:
+it removes `-nkvo`, which stops the pinning, which is what makes G41/G42 worth doing.
+
+### Fatal rather than slow
+
+Most refused ops just split the graph. SET_ROWS is one of the few where refusal is
+fatal: the destination is pre-allocated in the CUDA8 buffer, so
+`ggml_backend_sched_backend_id_from_cur` has no legal placement and calls
+`GGML_ABORT`:
+
+    pre-allocated tensor (cache_k_l0) in a buffer (CUDA8_0) that cannot run the
+    operation (SET_ROWS)
+
+That is the abort seen at the start of G39.
+
+### F32 only - the cache type requirement moves, it does not disappear
+
+Only F32 destinations are handled. F16 stores need G49, so the KV cache must stay
+F32 (`--cache-type-k f32 --cache-type-v f32`). Dropping `-nkvo` *without* those flags
+re-triggers the abort above, because the F16 cache would sit in our buffer with no
+backend able to write it.
+
+    before G43:  -ngl 99 -nkvo -fa off --cache-type-k f32 --cache-type-v f32
+    after  G43:  -ngl 99       -fa off --cache-type-k f32 --cache-type-v f32
+
+### Verification
+
+Same method as G45/G40 - an independent transcription of ggml's implementation,
+compared against a transcription of the kernel, across five configurations:
+
+    kv-cache 2D          padded dst rows        3D idx broadcast
+    4D idx broadcast     ne11=2 (no broadcast)
+
+Index tensors deliberately included out-of-range values. The CPU path asserts on
+those; a kernel cannot, and writing anyway would corrupt memory outside the
+destination, so the kernel skips them - both sides agree on that behaviour.
+
+New files: `ggml-cuda8-set-rows.cu`, `ggml-cuda8-set-rows-smoke.cu`.
+New dispatch op: `GGML_CUDA8_OP_SET_ROWS_F32` (21 dispatch ops now).
+<!-- G43_STATUS_END -->
 
 
 

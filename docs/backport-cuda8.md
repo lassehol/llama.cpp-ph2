@@ -204,10 +204,10 @@ accordingly:
 |---|---|---|
 | ~~**G38**~~ | ~~Grid clamps on the remaining launches; oversized-tensor smoke; `-Xptxas -v`~~ | **DONE — PASS on GTX 560, 21/21.** §3.2. Register baseline (§3.3) wired but not yet measured. |
 | **G39** | Load a real GGUF through `llama-server` (or `rpc-server`) with `GGML_CUDA8_HOST`; log the CPU/GPU split count and per-op fallback reasons | **Measure before optimizing.** With K-quants working, a Q4_K model is now a realistic first load. The split log turns the rest of this list from guesswork into data. |
-| ~~**G40**~~ | ~~`GLU` / `SWIGLU`~~ | **Code done, pending hardware regression.** 3080 in the G39 log. Both the split and halves forms; row strides honoured rather than assuming contiguity. |
+| ~~**G40**~~ | ~~`GLU` / `SWIGLU`~~ | **DONE — PASS on GTX 560, 22/22.** 3080 in the G39 log. Both the split and halves forms; row strides honoured rather than assuming contiguity. |
 | **G41** | `SOFT_MAX_EXT` proper: mask tensor + scale + `max_bias` | Reverts G37's restriction. Real attention softmax currently runs on CPU. |
 | **G42** | Wire the existing F32×F32 matvec (`mmv.cu:210`) into dispatch + `supports_op` | Kernel already written and benched — near-free win for the attention matmuls. |
-| **G43** | `SET_ROWS` + F32 KV cache path | Keeps the KV cache on-device. |
+| ~~**G43**~~ | ~~`SET_ROWS` + F32 KV cache path~~ | **Code done, pending hardware regression.** Reordered ahead of G41/G42: `-nkvo` makes llama.cpp pin attention to the CPU, so the attention kernels are pointless until the cache is device-resident. F32 dst only — `--cache-type-k/v f32` still required until G49. |
 | **G44** | `SCALE`; broadcast `ADD` | Cheap leaf-node splits. |
 | ~~**G45**~~ | ~~ROPE NEOX~~ | **DONE — PASS on GTX 560, 21/21.** Top of the G39 log at 4312. freq_factors and attn_factor now explicitly refused rather than silently dropped. |
 | **G46** | Permuted / non-contiguous src1 for MUL_MAT | The attention matmuls use permuted views. |

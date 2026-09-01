@@ -72,6 +72,7 @@ const char * ggml_cuda8_op_name(int op_id) {
         case GGML_CUDA8_OP_GET_ROWS_Q4_K:    return "GET_ROWS_Q4_K";
         case GGML_CUDA8_OP_GET_ROWS_Q6_K:    return "GET_ROWS_Q6_K";
         case GGML_CUDA8_OP_SWIGLU_F32:       return "SWIGLU_F32";
+        case GGML_CUDA8_OP_SET_ROWS_F32:     return "SET_ROWS_F32";
         default:                                  return "UNKNOWN";
     }
 }
@@ -247,6 +248,67 @@ static int ggml_cuda8_exec_mul_f32(
 
 
 // -- G28A: ROPE_F32 helpers ---------------------------------------------------
+// -- G43: SET_ROWS -----------------------------------------------------------
+
+extern "C" int ggml_cuda8_op_set_rows_f32(
+        const void * src0, const void * idx, void * dst,
+        int nc, int nr, int ne02, int ne03,
+        int ne11, int ne12, int ne1,
+        size_t nb01, size_t nb02, size_t nb03,
+        size_t nb10, size_t nb11, size_t nb12,
+        size_t nb1,  size_t nb2,  size_t nb3);
+
+static int ggml_cuda8_supported_set_rows_f32(
+        const struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * src1,
+        const struct ggml_tensor * dst) {
+    (void) ctx;
+
+    if (src0 == NULL || src1 == NULL || dst == NULL) return 0;
+
+    // F16 destinations need the G49 store path; until then the KV cache must
+    // be F32, i.e. --cache-type-k/v f32.
+    if (src0->type != GGML_TYPE_F32) return 0;
+    if (dst->type  != GGML_TYPE_F32) return 0;
+
+    // llama-kv-cache.cpp creates the index tensor as I64.
+    if (src1->type != GGML_TYPE_I64) return 0;
+
+    if (dst->ne[0] != src0->ne[0]) return 0;
+    if (dst->ne[2] != src0->ne[2]) return 0;
+    if (dst->ne[3] != src0->ne[3]) return 0;
+
+    // Index broadcast requirements from the CPU reference.
+    if (src1->ne[1] == 0 || src1->ne[2] == 0)      return 0;
+    if (src0->ne[2] % src1->ne[1] != 0)            return 0;
+    if (src0->ne[3] % src1->ne[2] != 0)            return 0;
+    if (src1->ne[0] < src0->ne[1])                 return 0;
+
+    return 1;
+}
+
+static int ggml_cuda8_exec_set_rows_f32(
+        struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * src1,
+        struct ggml_tensor * dst) {
+    (void) ctx;
+
+    return ggml_cuda8_op_set_rows_f32(
+        src0->data, src1->data, dst->data,
+        (int) src0->ne[0],   // nc
+        (int) src0->ne[1],   // nr
+        (int) src0->ne[2],
+        (int) src0->ne[3],
+        (int) src1->ne[1],
+        (int) src1->ne[2],
+        (int) dst->ne[1],
+        src0->nb[1], src0->nb[2], src0->nb[3],
+        src1->nb[0], src1->nb[1], src1->nb[2],
+        dst->nb[1],  dst->nb[2],  dst->nb[3]);
+}
+
 // -- G40: SWIGLU -------------------------------------------------------------
 
 extern "C" int ggml_cuda8_op_swiglu_f32(
@@ -568,6 +630,9 @@ int ggml_cuda8_dispatch_supported(
         case GGML_CUDA8_OP_SWIGLU_F32:
             return ggml_cuda8_supported_swiglu_f32(ctx, src0, src1, dst);
 
+        case GGML_CUDA8_OP_SET_ROWS_F32:
+            return ggml_cuda8_supported_set_rows_f32(ctx, src0, src1, dst);
+
         default:
             return 0;
     }
@@ -655,6 +720,9 @@ int ggml_cuda8_dispatch_execute(
 
         case GGML_CUDA8_OP_SWIGLU_F32:
             return ggml_cuda8_exec_swiglu_f32(ctx, src0, src1, dst);
+
+        case GGML_CUDA8_OP_SET_ROWS_F32:
+            return ggml_cuda8_exec_set_rows_f32(ctx, src0, src1, dst);
 
         default:
             return -1;

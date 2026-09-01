@@ -79,6 +79,7 @@ KERNEL_REGRESSION=(
     ggml-cuda8-diagmask-smoke
     ggml-cuda8-getrows-smoke
     ggml-cuda8-swiglu-smoke
+    ggml-cuda8-set-rows-smoke
 )
 
 # End-to-end graphs. Unaffected in principle by both G37 and G38.

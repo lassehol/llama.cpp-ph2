@@ -171,6 +171,7 @@ cuda_add_library(ggml-cuda8-kernels STATIC
     ggml-cuda8-q4k.cu
     ggml-cuda8-q6k.cu
     ggml-cuda8-swiglu.cu
+    ggml-cuda8-set-rows.cu
 )
 set_target_properties(ggml-cuda8-kernels PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
@@ -1560,6 +1561,14 @@ cuda_add_executable(ggml-cuda8-swiglu-smoke
     ggml-cuda8-swiglu.cu)
 target_link_libraries(ggml-cuda8-swiglu-smoke ${CUDA_LIBRARIES})
 set_target_properties(ggml-cuda8-swiglu-smoke PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+# -- G43: SET_ROWS smoke ------------------------------------------------------
+cuda_add_executable(ggml-cuda8-set-rows-smoke
+    ggml-cuda8-set-rows-smoke.cu
+    ggml-cuda8-set-rows.cu)
+target_link_libraries(ggml-cuda8-set-rows-smoke ${CUDA_LIBRARIES})
+set_target_properties(ggml-cuda8-set-rows-smoke PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 # -- G38: oversized-tensor smoke ----------------------------------------------
