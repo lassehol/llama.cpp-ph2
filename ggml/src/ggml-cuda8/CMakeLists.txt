@@ -114,8 +114,29 @@ target_compile_definitions(ggml-cuda8-ggml-core PUBLIC
     GGML_COMMIT="${GGML_COMMIT}"
 )
 
-target_link_libraries(ggml-cuda8-ggml-core
+# The standalone-GC pattern, same as the graph-builder smoke targets use.
+#
+# ../ggml.c references ggml_backend_tensor_set() and
+# ggml_backend_tensor_memset() from ggml_set_zero() and ggml_graph_reset().
+# Those live in ../ggml-backend.cpp, which cannot be compiled here - the full
+# ggml target drags in C++17 sources (gguf.cpp and friends) that GCC 5.4 at
+# C++11 will not accept.
+#
+# Nothing in this backend calls those two functions, so compile every function
+# into its own section and let the linker discard the unreachable ones. GNU ld
+# does not report undefined references from sections it has garbage-collected,
+# so the symbols never need to exist.
+#
+# -Wl,--gc-sections is PUBLIC so it reaches the executables: the flag has to be
+# on the final link line, not just on this archive.
+target_compile_options(ggml-cuda8-ggml-core PRIVATE
+    -ffunction-sections
+    -fdata-sections
+)
+
+target_link_libraries(ggml-cuda8-ggml-core PUBLIC
     ${CMAKE_THREAD_LIBS_INIT}
+    -Wl,--gc-sections
 )
 
 cuda_add_library(ggml-cuda8-kernels STATIC
