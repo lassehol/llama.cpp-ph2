@@ -14,6 +14,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <atomic>
+#include <time.h>
+#include <map>
+#include <string>
+#include <vector>
+#include <algorithm>
 // This TU calls the CUDA runtime directly (cudaDeviceSynchronize et al) and does
 // not get cuda_runtime.h transitively: the ggml-cuda8-*.h chain reaches only
 // ggml-cuda8-context.h / -backend.h, neither of which includes it.
@@ -80,6 +85,54 @@ static bool cuda8_error_is_fatal(cudaError_t err) {
 // called from outside this translation unit.
 extern "C" int ggml_cuda8_ggml_backend_device_is_poisoned(void) {
     return g_cuda8_device_poisoned.load(std::memory_order_acquire) ? 1 : 0;
+}
+// ==== G57 timing probe — measurement only, gated by GGML_CUDA8_TIMING=1 ====
+static bool cuda8_timing_enabled() {
+    static int e = -1;
+    if (e < 0) {
+        const char * s = std::getenv("GGML_CUDA8_TIMING");
+        e = (s != NULL && s[0] != '\0' && s[0] != '0') ? 1 : 0;
+    }
+    return e == 1;
+}
+static double cuda8_now_ms() {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (double) t.tv_sec * 1e3 + (double) t.tv_nsec / 1e6;
+}
+struct cuda8_timing_state {
+    std::map<std::string, double> op_ms;
+    std::map<std::string, long>   op_count;
+    double total_graph_ms;
+    long   graph_calls;
+};
+static cuda8_timing_state & cuda8_timing() {
+    static cuda8_timing_state s;
+    return s;
+}
+static void cuda8_timing_report() {
+    cuda8_timing_state & s = cuda8_timing();
+    if (s.graph_calls == 0) return;
+    double sum_ops = 0.0;
+    std::vector<std::pair<double, std::string> > v;
+    for (std::map<std::string, double>::iterator it = s.op_ms.begin(); it != s.op_ms.end(); ++it) {
+        v.push_back(std::make_pair(it->second, it->first));
+        sum_ops += it->second;
+    }
+    std::sort(v.begin(), v.end());
+    std::reverse(v.begin(), v.end());
+    std::fprintf(stderr,
+        "\nggml-cuda8 TIMING: %ld graph_compute calls\n"
+        "  sum of per-op GPU compute (synced): %.1f ms  (= %.1f ms/graph)\n"
+        "  --> compare against baseline ms/token = 1000 / gen_t_per_s\n"
+        "  per-op-type GPU time, by total ms:\n",
+        s.graph_calls, sum_ops, sum_ops / (double) s.graph_calls);
+    for (size_t i = 0; i < v.size(); ++i) {
+        const std::string & name = v[i].second;
+        std::fprintf(stderr, "  %10.1f ms  %9ld calls  %8.4f ms/call  %s\n",
+            v[i].first, s.op_count[name],
+            v[i].first / (double) s.op_count[name], name.c_str());
+    }
 }
 static const char * cuda8_backend_get_name(ggml_backend_t backend) {
     (void) backend;
@@ -480,13 +533,28 @@ static enum ggml_status cuda8_backend_graph_compute(ggml_backend_t backend, stru
                 return (enum ggml_status) -1;
         }
         std::printf("ggml-cuda8/backend: graph_compute node %d %s\n", i, opname);
+        const bool timing = cuda8_timing_enabled();
+        double op_t0 = 0.0;
+        if (timing) { cudaDeviceSynchronize(); op_t0 = cuda8_now_ms(); }
         if (ggml_cuda8_ggml_backend_dispatch_op(backend, ctx, cuda8_op, dispatch_src0, dispatch_src1, dispatch_dst) != 0) {
             std::fprintf(stderr, "ggml-cuda8/backend graph_compute: dispatch failed at node %d op=%s\n", i, opname);
             ggml_cuda8_context_destroy(ctx);
             return (enum ggml_status) -1;
         }
+        if (timing) {
+            cudaDeviceSynchronize();
+            cuda8_timing_state & ts = cuda8_timing();
+            ts.op_ms[opname]    += cuda8_now_ms() - op_t0;
+            ts.op_count[opname] += 1;
+        }
     }
     ggml_cuda8_context_destroy(ctx);
+    if (cuda8_timing_enabled()) {
+        cuda8_timing_state & ts = cuda8_timing();
+        ts.graph_calls += 1;
+        static bool reg = false;
+        if (!reg) { std::atexit(cuda8_timing_report); reg = true; }
+    }
     std::printf("ggml-cuda8/backend: graph_compute SUCCESS\n");
     return GGML_STATUS_SUCCESS;
 }
