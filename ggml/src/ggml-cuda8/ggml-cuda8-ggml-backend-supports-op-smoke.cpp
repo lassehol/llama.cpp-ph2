@@ -34,6 +34,24 @@ static void set_soft_max_params(ggml_tensor * t, float scale, float max_bias) {
     std::memcpy(t->op_params, p, sizeof(p));
 }
 
+// G45: stamp ROPE op_params the way ggml_rope_ext() does.
+// Same trap as SOFT_MAX: a memset fixture leaves attn_factor at 0.0f, but real
+// ggml passes 1.0f, and supports_op refuses anything else because the kernel
+// does not apply it.
+static void set_rope_params(ggml_tensor * t, int n_dims, int mode,
+                            float freq_base, float freq_scale,
+                            float ext_factor, float attn_factor) {
+    int32_t p[15];
+    std::memset(p, 0, sizeof(p));
+    p[1] = n_dims;
+    p[2] = mode;
+    std::memcpy(&p[5],  &freq_base,   sizeof(float));
+    std::memcpy(&p[6],  &freq_scale,  sizeof(float));
+    std::memcpy(&p[7],  &ext_factor,  sizeof(float));
+    std::memcpy(&p[8],  &attn_factor, sizeof(float));
+    std::memcpy(t->op_params, p, sizeof(p));
+}
+
 // Create a minimal fake tensor for supports_op testing
 static ggml_tensor make_fake(ggml_type type, int64_t ne0, int64_t ne1) {
     ggml_tensor t;
@@ -194,22 +212,21 @@ int main() {
     op_t.src[0] = &f32_128;
     ok &= test_op(dev, "RMS_NORM", &op_t, true);
 
-    // ROPE (mode=0)
+    // ROPE NORMAL (mode=0)
     op_t = make_fake(GGML_TYPE_F32, 64, 1);
     op_t.op = GGML_OP_ROPE;
     op_t.src[0] = &f32_64;
     op_t.src[1] = &i32_1;
-    {
-        int32_t p[15];
-        std::memset(p, 0, sizeof(p));
-        p[1] = 64; p[2] = 0;
-        float fb = 10000.0f, fs = 1.0f, ef = 0.0f;
-        std::memcpy(&p[5], &fb, sizeof(float));
-        std::memcpy(&p[6], &fs, sizeof(float));
-        std::memcpy(&p[7], &ef, sizeof(float));
-        std::memcpy(op_t.op_params, p, sizeof(p));
-    }
-    ok &= test_op(dev, "ROPE (mode=0)", &op_t, true);
+    set_rope_params(&op_t, 64, 0, 10000.0f, 1.0f, 0.0f, 1.0f);
+    ok &= test_op(dev, "ROPE (mode=0 NORMAL)", &op_t, true);
+
+    // G45: ROPE NEOX (mode=2) - now supported. Qwen3 and friends use this.
+    op_t = make_fake(GGML_TYPE_F32, 64, 1);
+    op_t.op = GGML_OP_ROPE;
+    op_t.src[0] = &f32_64;
+    op_t.src[1] = &i32_1;
+    set_rope_params(&op_t, 64, 2, 1000000.0f, 1.0f, 0.0f, 1.0f);
+    ok &= test_op(dev, "ROPE (mode=2 NEOX)", &op_t, true);
 
     // CONT
     op_t = make_fake(GGML_TYPE_F32, 64, 1);
@@ -240,39 +257,53 @@ int main() {
     op_t.src[1] = &f32_128;
     ok &= test_op(dev, "MUL_MAT (F32xF32)", &op_t, false);
 
-    // ROPE mode=2
+    // ROPE MROPE (mode=8) - different pair layout and section handling
     op_t = make_fake(GGML_TYPE_F32, 64, 1);
     op_t.op = GGML_OP_ROPE;
     op_t.src[0] = &f32_64;
     op_t.src[1] = &i32_1;
-    {
-        int32_t p[15];
-        std::memset(p, 0, sizeof(p));
-        p[1] = 64; p[2] = 2;
-        float fb = 10000.0f, fs = 1.0f, ef = 0.0f;
-        std::memcpy(&p[5], &fb, sizeof(float));
-        std::memcpy(&p[6], &fs, sizeof(float));
-        std::memcpy(&p[7], &ef, sizeof(float));
-        std::memcpy(op_t.op_params, p, sizeof(p));
-    }
-    ok &= test_op(dev, "ROPE (mode=2/mrope)", &op_t, false);
+    set_rope_params(&op_t, 64, 8, 10000.0f, 1.0f, 0.0f, 1.0f);
+    ok &= test_op(dev, "ROPE (mode=8 MROPE)", &op_t, false);
+
+    // ROPE VISION (mode=24)
+    op_t = make_fake(GGML_TYPE_F32, 64, 1);
+    op_t.op = GGML_OP_ROPE;
+    op_t.src[0] = &f32_64;
+    op_t.src[1] = &i32_1;
+    set_rope_params(&op_t, 64, 24, 10000.0f, 1.0f, 0.0f, 1.0f);
+    ok &= test_op(dev, "ROPE (mode=24 VISION)", &op_t, false);
 
     // ROPE YaRN
     op_t = make_fake(GGML_TYPE_F32, 64, 1);
     op_t.op = GGML_OP_ROPE;
     op_t.src[0] = &f32_64;
     op_t.src[1] = &i32_1;
-    {
-        int32_t p[15];
-        std::memset(p, 0, sizeof(p));
-        p[1] = 64; p[2] = 0;
-        float fb = 10000.0f, fs = 1.0f, ef = 1.0f;
-        std::memcpy(&p[5], &fb, sizeof(float));
-        std::memcpy(&p[6], &fs, sizeof(float));
-        std::memcpy(&p[7], &ef, sizeof(float));
-        std::memcpy(op_t.op_params, p, sizeof(p));
-    }
+    set_rope_params(&op_t, 64, 0, 10000.0f, 1.0f, 1.0f /* ext */, 1.0f);
     ok &= test_op(dev, "ROPE (YaRN ext=1)", &op_t, false);
+
+    // G45: attn_factor scales cos/sin magnitude; the kernel always uses 1.
+    op_t = make_fake(GGML_TYPE_F32, 64, 1);
+    op_t.op = GGML_OP_ROPE;
+    op_t.src[0] = &f32_64;
+    op_t.src[1] = &i32_1;
+    set_rope_params(&op_t, 64, 0, 10000.0f, 1.0f, 0.0f, 0.8f /* attn */);
+    ok &= test_op(dev, "ROPE (attn_factor!=1)", &op_t, false);
+
+    // G45: freq_factors in src[2] rescale theta per pair; the kernel ignores it.
+    op_t = make_fake(GGML_TYPE_F32, 64, 1);
+    op_t.op = GGML_OP_ROPE;
+    op_t.src[0] = &f32_64;
+    op_t.src[1] = &i32_1;
+    op_t.src[2] = &f32_64;   // freq_factors
+    set_rope_params(&op_t, 64, 0, 10000.0f, 1.0f, 0.0f, 1.0f);
+    ok &= test_op(dev, "ROPE (freq_factors)", &op_t, false);
+
+    // ROPE with zeroed op_params - attn_factor reads as 0, not a valid node
+    op_t = make_fake(GGML_TYPE_F32, 64, 1);
+    op_t.op = GGML_OP_ROPE;
+    op_t.src[0] = &f32_64;
+    op_t.src[1] = &i32_1;
+    ok &= test_op(dev, "ROPE (zero params)", &op_t, false);
 
     // G37: soft_max_ext forms. The SOFTMAX_ROWS_F32 kernel implements none of
     // these - it takes no mask, no sinks, and never reads op_params. If

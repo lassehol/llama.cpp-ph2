@@ -279,18 +279,41 @@ static bool ggml_backend_cuda8_device_supports_op_impl(const struct ggml_tensor 
             return (op->type == GGML_TYPE_F32 &&
                     op->src[0] && op->src[0]->type == GGML_TYPE_F32);
 
-        // rotary positional embeddings (mode=0 only)
+        // rotary positional embeddings: NORMAL (0) and NEOX (2)
         case GGML_OP_ROPE: {
             if (op->type != GGML_TYPE_F32) return false;
             if (!op->src[0] || op->src[0]->type != GGML_TYPE_F32) return false;
             if (!op->src[1] || op->src[1]->type != GGML_TYPE_I32) return false;
-            // check mode=0 and ext_factor=0
+
+            // G45: freq_factors. rope_yarn divides theta by freq_factors[pair]
+            // (ggml-cpu/ops.cpp, ggml_rope_cache_init). The kernel does not read
+            // src[2], so accepting a node carrying one would silently apply the
+            // wrong rotation - the same failure mode as SOFT_MAX in G37.
+            if (op->src[2] != NULL) return false;
+
             int32_t params[15];
             std::memcpy(params, op->op_params, sizeof(params));
-            int mode = params[2];
-            float ext_factor;
-            std::memcpy(&ext_factor, &params[7], sizeof(float));
-            return (mode == 0 && ext_factor == 0.0f);
+
+            const int mode = params[2];
+
+            float ext_factor, attn_factor;
+            std::memcpy(&ext_factor,  &params[7], sizeof(float));
+            std::memcpy(&attn_factor, &params[8], sizeof(float));
+
+            // MROPE (8), VISION (24) and IMROPE (40) use different pair layouts
+            // and section handling that this kernel does not implement.
+            if (mode != GGML_ROPE_TYPE_NORMAL && mode != GGML_ROPE_TYPE_NEOX) {
+                return false;
+            }
+
+            // YaRN: ext_factor blends interpolated and extrapolated theta.
+            if (ext_factor != 0.0f) return false;
+
+            // attn_factor scales the cos/sin magnitude (mscale in rope_yarn).
+            // The kernel always uses magnitude 1.
+            if (attn_factor != 1.0f) return false;
+
+            return true;
         }
 
         // contiguous copy

@@ -1675,7 +1675,32 @@ though, so partial offload may be needed.
 The frequency ordering is per-architecture. If Qwen3 is the target, G45 moves up the
 list; if it is a LLaMA-class model, G40 and G41 come first.
 
-### Expected obstacle: the CUDA 8 GCC check
+### Required: `-nkvo` until SET_ROWS lands (G43)
+
+Without it, the run aborts during `graph_reserve`:
+
+    pre-allocated tensor (cache_k_l0) in a buffer (CUDA8_0) that cannot run the
+    operation (SET_ROWS)
+
+The KV cache is written with `ggml_set_rows` (`llama-kv-cache.cpp:1228,1263,1284`).
+With `-ngl 99` the cache is allocated in the CUDA8 buffer, so the destination tensor
+is pre-allocated in a buffer whose backend does not support the op - and the CPU
+backend does not accept that buffer type. `ggml_backend_sched_backend_id_from_cur`
+has no legal placement and calls `GGML_ABORT` rather than falling back.
+
+This is the one class of unsupported op that is fatal rather than merely slow: a
+refused op on *activations* just splits the graph, but a refused op writing to a
+*pre-allocated* tensor has nowhere to go. `-nkvo` / `--no-kv-offload` keeps the cache
+in host memory and sidesteps it. G43 removes the need.
+
+### Expected obstacle: the CUDA 8 GCC check (did NOT occur)
+
+Recorded because the prediction was wrong and the reason is worth keeping:
+the host build with GCC 11.4 completed cleanly against the staged CUDA 8 headers.
+The `crt/host_config.h` version check either is not reached by this include path or
+is not present in the way expected. No mitigation was needed.
+
+Original analysis follows, in case a future toolchain change revives it.
 
 CUDA 8's `crt/host_config.h` contains
 
@@ -1700,10 +1725,130 @@ preference:
 3. Declare the few runtime functions by hand in the host TU and drop the
    `cuda_runtime.h` include entirely.
 
-### Results
+### Results: Qwen3-0.6B-Q4_K_M on the GTX 560
 
-*Not yet run.* Paste the `GGML_CUDA8_DEBUG_OPS` summary here once it is.
+The model loads and lands on the GPU - 372 MiB of weights, 306 MiB compute buffer,
+190 MiB free of 963 MiB. The 1 GB budget holds for a 0.6B model at Q4_K_M.
+
+Ops refused by `supports_op`, by frequency (counts span several `graph_reserve`
+passes, so read the ratios rather than the absolute numbers):
+
+           4312  ROPE dst=f32 src0=f32 src1=i32
+           3080  GLU/SWIGLU dst=f32 src0=f32 src1=f32
+            448  MUL_MAT dst=f32 src0=f32 src1=f32
+            224  SOFT_MAX dst=f32 src0=f32 src1=f32 [soft_max_ext: mask/sinks/scale/max_bias]
+            171  CPY dst=f16 src0=f32 src1=f16
+             84  FLASH_ATTN_EXT dst=f32 src0=f32 src1=f16
+
+**ROPE and SWIGLU dominate by an order of magnitude.** ROPE is the Qwen3 NeoX
+(`mode=2`) case, refused on every layer; SWIGLU is the entire FFN. Everything else is
+a rounding error next to those two.
+
+Note this ordering is Qwen3-specific. A LLaMA-architecture model uses `mode=0` rope,
+which is already supported, so ROPE would vanish from its list entirely and SWIGLU
+would lead. Worth re-running against a LLaMA-class model before treating this as the
+definitive ordering.
+
+`MUL_MAT f32xf32` at 448 is the attention matmuls (K·Q, probs·V) - activations rather
+than weights, so the Q4_K path never sees them. An earlier draft called wiring these
+up a "near-free win" because `mmv.cu:210` already has F32 kernels. That was wrong:
+those are strictly matrix-times-vector, while the attention matmuls are per-head
+batched and 3D (`ne02`/`ne03`), often on permuted views. Useful starting point, not a
+drop-in.
+
+`-fa off` matters: the default is `auto`, and since the CPU backend supports
+`FLASH_ATTN_EXT`, auto enables it and the whole attention block becomes one CPU op.
+While FA is on, implementing SOFT_MAX and MUL_MAT changes nothing, because those
+nodes are not in the graph.
+
+### Bug found and fixed: double free during teardown
+
+With `-nkvo -fa off` the run got past the scheduler and printed its memory
+breakdown, then died with `double free or corruption (fasttop)`.
+
+`cuda8_free_buffer()` ended with `std::free(buffer)`. But
+`ggml_backend_buffer_free()` calls that hook and then does `delete buffer` itself, so
+the struct was released twice - and with mismatched allocators, since ggml allocates
+it with `new` in `ggml_backend_buffer_init()` while `cuda8_buft_alloc_buffer()` was
+hand-rolling a `std::malloc`.
+
+Fixed by allocating through `ggml_backend_buffer_init()` and leaving the struct's
+lifetime entirely to ggml. The hook now owns only the device allocation and our own
+context. This would have corrupted the heap on every buffer free; nothing caught it
+earlier because the smoke tests allocate and free through the same paths without a
+full model teardown.
+
+(`backend->device` was checked at the same time and is fine - `init_backend` in
+`ggml-cuda8-backend-reg.cpp` sets it, as it must, since `ggml_backend_supports_buft`
+dereferences it.)
 <!-- G39_STATUS_END -->
+
+<!-- G45_STATUS_START -->
+## G45 status: ROPE NeoX (mode 2)
+
+Status: **implemented, NOT yet verified on hardware.**
+
+Top of the G39 rejection log by an order of magnitude - 4312 refusals, every ROPE
+node in every layer, because Qwen3 uses NeoX-style rope and `supports_op` accepted
+only `mode=0`.
+
+### The layout difference
+
+Both modes rotate `n_dims/2` pairs and pass through `[n_dims, ne0)`; they differ only
+in which two elements form a pair. From `rotate_pairs()` in
+`ggml/src/ggml-cpu/ops.cpp`:
+
+    NORMAL (0)  rotate_pairs(n_dims, n_offset=1,         scale=1)
+                pair p -> elements (2p, 2p+1)            [cscscscs]
+    NEOX   (2)  rotate_pairs(n_dims, n_offset=n_dims/2,  scale=2)
+                pair p -> elements (p, p + n_dims/2)     [ccccssss]
+
+theta is indexed by the pair number in both cases, so the rotation maths is shared and
+only the element indices change.
+
+### Verification
+
+`kernel_rope_f32` and the smoke's CPU reference share the same logic, so agreeing
+proves nothing. Both were instead checked against an independent transcription of
+ggml's own `ggml_rope_cache_init` + `rotate_pairs`, across four configurations:
+
+    full rotary head_dim=64            mode=0  9.5e-07   mode=2  1.2e-06
+    partial rotary n_dims=32           mode=0  6.0e-07   mode=2  6.6e-07
+    qwen3-like freq_base=1e6           mode=0  9.8e-07   mode=2  1.2e-06
+    freq_scale=0.5, partial rotary     mode=0  3.0e-07   mode=2  2.4e-07
+
+The smoke also asserts NEOX output *differs* from NORMAL on the same input - if the
+kernel ignored `mode`, both would match a reference that also ignored it.
+
+### Two silently-ignored parameters, now refused
+
+`supports_op` checked only `mode` and `ext_factor`. Two others were being dropped on
+the floor - the same class of bug as SOFT_MAX in G37:
+
+- **`src[2]` (freq_factors)** - `ggml_rope_cache_init` divides theta by
+  `freq_factors[pair]`. The kernel never reads src[2], so a node carrying one would
+  have been rotated at the wrong frequencies.
+- **`attn_factor`** (`op_params[8]`) - `rope_yarn` multiplies cos/sin by it (`mscale`).
+  The kernel always uses magnitude 1.
+
+Both now rejected in `supports_op` and re-checked in the dispatch. Note the fixture
+trap this exposes, same as G37's: a `memset` fixture leaves `attn_factor` at `0.0f`,
+but real ggml passes `1.0f`. The supports-op smoke gained `set_rope_params()` for
+exactly this reason.
+
+Signature change: `ggml_cuda8_op_rope_f32()` gained an `int mode` parameter.
+
+New/changed smoke cases:
+
+    ROPE (mode=0 NORMAL)    -> true      ROPE (mode=8 MROPE)     -> false
+    ROPE (mode=2 NEOX)      -> true      ROPE (mode=24 VISION)   -> false
+                                         ROPE (YaRN ext=1)       -> false
+                                         ROPE (attn_factor!=1)   -> false
+                                         ROPE (freq_factors)     -> false
+                                         ROPE (zero params)      -> false
+
+`ROPE (mode=2/mrope) -> false` was removed - it asserted the old restriction.
+<!-- G45_STATUS_END -->
 
 
 

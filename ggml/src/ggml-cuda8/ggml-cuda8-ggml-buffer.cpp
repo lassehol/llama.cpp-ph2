@@ -71,7 +71,16 @@ static void cuda8_free_buffer(ggml_backend_buffer_t buffer) {
         std::free(ctx);
     }
 
-    std::free(buffer);
+    // G39: do NOT free `buffer` here.
+    //
+    // ggml_backend_buffer_free() calls this hook and then does `delete buffer`
+    // itself (ggml-backend.cpp). Freeing it here made that a double free, which
+    // glibc reports as "double free or corruption (fasttop)" during teardown.
+    // The struct also belongs to ggml, which allocates it with `new` in
+    // ggml_backend_buffer_init() - so releasing it with std::free() was a
+    // mismatched deallocation on top of the double free.
+    //
+    // This hook owns the device allocation and our own context, nothing else.
 }
 
 static void * cuda8_get_base(ggml_backend_buffer_t buffer) {
@@ -237,8 +246,15 @@ static ggml_backend_buffer_t cuda8_buft_alloc_buffer(
 
     ctx->cuda8_buf = raw;
 
+    // G39: let ggml allocate and own the buffer struct.
+    //
+    // Previously this malloc'd the struct by hand. ggml_backend_buffer_free()
+    // deletes it, so a hand-rolled malloc was a mismatched deallocation, and
+    // cuda8_free_buffer() freeing it too made it a double free. Going through
+    // ggml_backend_buffer_init() keeps ownership in one place and picks up any
+    // future fields added to the struct.
     ggml_backend_buffer_t buffer =
-        (ggml_backend_buffer_t) std::malloc(sizeof(struct ggml_backend_buffer));
+        ggml_backend_buffer_init(buft, cuda8_buffer_i, ctx, size);
 
     if (buffer == NULL) {
         ggml_cuda8_backend_buffer_free(raw);
@@ -246,16 +262,10 @@ static ggml_backend_buffer_t cuda8_buft_alloc_buffer(
         return NULL;
     }
 
-    std::memset(buffer, 0, sizeof(*buffer));
-
-    buffer->iface   = cuda8_buffer_i;
-    buffer->buft    = buft;
-    buffer->context = ctx;
-    buffer->size    = size;
-    buffer->usage   = (enum ggml_backend_buffer_usage) 0;
-
     if (!ggml_cuda8_ggml_register_buffer(buffer)) {
-        cuda8_free_buffer(buffer);
+        // Full teardown: our hook releases the device memory and ctx, then
+        // ggml deletes the struct.
+        ggml_backend_buffer_free(buffer);
         return NULL;
     }
 

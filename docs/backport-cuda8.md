@@ -209,7 +209,7 @@ accordingly:
 | **G42** | Wire the existing F32×F32 matvec (`mmv.cu:210`) into dispatch + `supports_op` | Kernel already written and benched — near-free win for the attention matmuls. |
 | **G43** | `SET_ROWS` + F32 KV cache path | Keeps the KV cache on-device. |
 | **G44** | `SCALE`; broadcast `ADD` | Cheap leaf-node splits. |
-| **G45** | ROPE NEOX + freq scaling | Opens up Qwen/Phi-class models. |
+| ~~**G45**~~ | ~~ROPE NEOX~~ | **Code done, pending hardware regression.** Top of the G39 log at 4312. freq_factors and attn_factor now explicitly refused rather than silently dropped. |
 | **G46** | Permuted / non-contiguous src1 for MUL_MAT | The attention matmuls use permuted views. |
 | **G47** | Q8_0 batched MUL_MAT, or drop Q8_0 to CPU | Only worth doing if a Q8_0 model is actually wanted; Q4_K is the better fit for 1 GB. |
 | **G49** | F16 *storage* support (convert on load, compute in F32) | Removes the `--cache-type f32` workaround and handles F16 `token_embd`/`output`. **Unblocked** — conversion verified on sm_21, §7. |
@@ -228,6 +228,121 @@ two more arrived with the G17A3 synchronize fix, so they are being committed to 
 accumulate.
 They should be deleted or moved out of the source tree — git already provides the history they
 duplicate, and they make the directory listing unreadable.
+
+---
+
+## 6b. Upstream sync to `0177dcc` (RPC protocol compatibility) — DONE
+
+**Outcome.** Merged as `2259d07`. Verified afterwards: `RPC_PROTO_MAJOR_VERSION 5`,
+`static_assert(GGML_OP_COUNT == 101)`, and both CUDA8 integration points intact
+(`ggml/src/CMakeLists.txt` 11 lines, now at 522-546; `ggml-backend-reg.cpp` 4 lines,
+now at 33-129). No CUDA8 source changes were needed - the backend ABI prediction held.
+
+Full container regression on the merged tree: **21/21 pass**, no rebuild breakage. The
+"expected breakage" list below predicted the standalone build would lose symbols to
+upstream restructuring; it did not - `--gc-sections` absorbed whatever moved, and the
+five new ops fell through `supports_op`'s `default: return false` as designed.
+
+**Where the estimate below was wrong.** It predicted "two files, ~15 lines" of conflict.
+The CUDA8-specific part of that was right - `CMakeLists.txt` and `ggml-backend-reg.cpp`
+both auto-merged - but the merge as a whole produced ~31 conflicts:
+
+- 1 real content conflict, `ggml/src/ggml-backend-meta.cpp`, resolved by taking
+  upstream (the fork's version had no CUDA8 content; it only appeared modified because
+  the fork's initial commit imported every file at once)
+- ~30 modify/delete conflicts on `.github/workflows/*.yml` and `build-xcframework.sh`,
+  which the fork had deleted and upstream had edited - all resolved by keeping them
+  deleted
+- `.gitattributes`, deleted upstream, kept from the fork for `*.sh text eol=lf`
+
+The estimate measured the CUDA8 touchpoints and missed two things: the fork's own
+unrelated divergence, and the fact that **the fork was created by importing a snapshot
+rather than forking git history**, so git had almost no shared history to merge
+against. Every future upstream sync will be similarly noisy for the same reason.
+Re-applying the CUDA8 work onto a real clone of llama.cpp would make subsequent merges
+routine, and is worth considering if upstream tracking becomes a recurring need.
+
+The original analysis follows.
+
+### Original analysis
+
+**Why.** The Fermi box is to run `rpc-server` against a `llama-server` built from
+upstream llama.cpp at `0177dcc7300bad8914bb838baabce87899812491`. RPC requires an
+exact major-version match (`ggml-rpc.cpp:356`), and:
+
+| | this fork | upstream `0177dcc` |
+|---|---|---|
+| `RPC_PROTO_MAJOR_VERSION` | 4 | **5** |
+| `GGML_OP_COUNT` | 96 | **101** |
+
+So a v4 server and a v5 client refuse to connect. Note `0177dcc` itself is unrelated
+to RPC — it is the `--mmap`/`--no-mmap` → `--load-mode` migration (#26934). It is
+simply the revision the peer will be built from.
+
+**Copying the RPC files across is not an option.** `ggml-rpc.h` carries
+`static_assert(GGML_OP_COUNT == 101)`, which fails against this tree's 96, and the RPC
+wire format serialises the ggml op enum - a v5 protocol on a 96-op ggml would claim a
+compatibility it does not have. The whole fork has to move.
+
+**The good news: no backend ABI drift.** `ggml-backend-impl.h` is identical between
+this tree and `0177dcc` - `GGML_BACKEND_API_VERSION 2` on both, and
+`ggml_backend_buffer_i` has the same eleven members in the same order (including
+`set_tensor_2d`/`get_tensor_2d`). The CUDA8 backend implements those vtables
+positionally, so it should carry forward untouched.
+
+**Conflict surface.** Everything else the port owns is new files, which cannot
+conflict:
+
+| File | Change | Conflict risk |
+|---|---|---|
+| `ggml/src/CMakeLists.txt` | 11 lines (`GGML_CUDA8`, `GGML_CUDA8_HOST` options) | real, small |
+| `ggml/src/ggml-backend-reg.cpp` | 4 lines (registration under `#ifdef GGML_USE_CUDA8`) | real, small |
+| `.gitattributes` | 1 line (`*.sh text eol=lf`) | only if upstream touched it |
+| `ggml/src/ggml-cuda8/**` | all new | none |
+| `ggml/src/ggml-cuda8-host.cmake` | new | none |
+| `scripts/fix_cuda8_synchronize.sh`, `docs/backport-cuda8.md` | new | none |
+
+### Procedure
+
+    git branch pre-0177dcc-backup                      # cheap insurance
+    git remote add upstream https://github.com/ggml-org/llama.cpp
+    git fetch upstream 0177dcc7300bad8914bb838baabce87899812491
+    git merge 0177dcc7300bad8914bb838baabce87899812491
+
+Resolve the two conflicts by keeping *both* sides: upstream's changes plus the CUDA8
+option block and the registration `#ifdef`.
+
+### Verify after merging
+
+    grep RPC_PROTO_MAJOR_VERSION ggml/include/ggml-rpc.h     # expect 5
+    grep -c cuda8 ggml/src/CMakeLists.txt                    # expect 11
+    grep -c CUDA8 ggml/src/ggml-backend-reg.cpp              # expect 4
+
+then the full container regression, then the host build.
+
+### Expected breakage, in order of likelihood
+
+1. **The standalone container build losing symbols again.**
+   `ggml-cuda8-ggml-core` compiles `../ggml.c`, `../ggml-quants.c` and
+   `../ggml-threading.cpp` only. If upstream moved code into new translation units,
+   or added calls that `--gc-sections` cannot discard, this reappears as undefined
+   references - exactly the `ggml_abort` / `ggml_backend_tensor_set` episode from G38F.
+   The fix is the same: add the source, or confirm the section is unreachable.
+
+2. **The five new ops.** `supports_op` ends in `default: return false`, so unknown ops
+   are refused safely. No action expected, but the G39 rejection log will show them if
+   Qwen3 uses any.
+
+3. **`--load-mode`.** `0177dcc` removes `--mmap`/`--no-mmap`/`--direct-io`. The
+   documented G39 invocation uses `-ngl`, `-nkvo`, `-fa`, `--cache-type-k/v`, none of
+   which are affected - but re-check the command after merging.
+
+4. **CMake integration points moving.** `ggml/src/CMakeLists.txt` is the file most
+   likely to have been restructured upstream; the `GGML_CUDA8` block may need
+   repositioning rather than a straight conflict resolution.
+
+Do this **before** further kernel work (G40/G45), so the op implementations target the
+final ggml API and the G39 measurement is not repeated against a moving base.
 
 ---
 

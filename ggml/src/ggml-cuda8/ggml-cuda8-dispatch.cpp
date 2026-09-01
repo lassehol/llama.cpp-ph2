@@ -246,10 +246,11 @@ static int ggml_cuda8_exec_mul_f32(
 
 
 // -- G28A: ROPE_F32 helpers ---------------------------------------------------
+// G45: gained an int mode parameter (0 = NORMAL, 2 = NEOX).
 extern "C" int ggml_cuda8_op_rope_f32(
         const float * x, float * dst, const int * pos,
         int ne0, int ne1, int ne2, int ne3,
-        int n_dims, float freq_base, float freq_scale);
+        int n_dims, int mode, float freq_base, float freq_scale);
 
 static int ggml_cuda8_supported_rope_f32(
         const struct ggml_cuda8_context * ctx,
@@ -278,14 +279,33 @@ static int ggml_cuda8_exec_rope_f32(
     int n_dims = op_params[1];
     int mode   = op_params[2];
 
-    float freq_base, freq_scale, ext_factor;
+    float freq_base, freq_scale, ext_factor, attn_factor;
     std::memcpy(&freq_base,   &op_params[5], sizeof(float));
     std::memcpy(&freq_scale,  &op_params[6], sizeof(float));
     std::memcpy(&ext_factor,  &op_params[7], sizeof(float));
+    std::memcpy(&attn_factor, &op_params[8], sizeof(float));
 
-    if (mode != 0 || ext_factor != 0.0f) {
-        std::fprintf(stderr, "ggml-cuda8/rope: unsupported mode=%d ext=%.1f\n",
-                     mode, (double)ext_factor);
+    // G45: NORMAL and NEOX are implemented; everything else must be refused.
+    if (mode != 0 && mode != 2) {
+        std::fprintf(stderr, "ggml-cuda8/rope: unsupported mode=%d\n", mode);
+        return -1;
+    }
+
+    // Defence in depth against the G37 class of bug - parameters the kernel
+    // does not read must never be silently dropped. supports_op refuses these,
+    // so reaching here means the scheduler bypassed it.
+    if (ext_factor != 0.0f) {
+        std::fprintf(stderr, "ggml-cuda8/rope: YaRN unsupported (ext_factor=%.3f)\n",
+                     (double) ext_factor);
+        return -1;
+    }
+    if (attn_factor != 1.0f) {
+        std::fprintf(stderr, "ggml-cuda8/rope: attn_factor=%.3f not applied by the kernel\n",
+                     (double) attn_factor);
+        return -1;
+    }
+    if (dst->src[2] != NULL) {
+        std::fprintf(stderr, "ggml-cuda8/rope: freq_factors (src[2]) not applied by the kernel\n");
         return -1;
     }
 
@@ -299,7 +319,7 @@ static int ggml_cuda8_exec_rope_f32(
         (float *)       dst->data,
         (const int *)   src1->data,
         ne0, ne1, ne2, ne3,
-        n_dims, freq_base, freq_scale);
+        n_dims, mode, freq_base, freq_scale);
 }
 
 
