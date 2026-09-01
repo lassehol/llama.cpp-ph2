@@ -13,9 +13,14 @@
 #include "ggml-backend.h"
 #include "ggml-backend-impl.h"
 
+#include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <map>
+#include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <cuda_runtime.h>
@@ -99,10 +104,130 @@ static ggml_backend_buffer_type_t ggml_backend_cuda8_device_get_host_buffer_type
     return NULL;  // no pinned host buffer support
 }
 
+// -- G39: unsupported-op logging ---------------------------------------------
+//
+// supports_op returns a bare bool, so when a real model falls back to the CPU
+// there is nothing recording which op was refused. GGML_SCHED_DEBUG=2 shows
+// where each node ended up running, but not why the CUDA8 backend declined it.
+//
+// Enable with GGML_CUDA8_DEBUG_OPS=1. Each distinct op signature is printed once
+// when first refused, and a summary ordered by frequency is printed at exit.
+// That summary is the implementation queue: the ops at the top are the ones
+// costing the most graph splits.
+//
+// C++11 only - this file is compiled both by the host toolchain and by GCC 5.4
+// inside the CUDA 8 container.
+
+static bool cuda8_debug_ops_enabled() {
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char * s = std::getenv("GGML_CUDA8_DEBUG_OPS");
+        enabled = (s != NULL && s[0] != '\0' && s[0] != '0') ? 1 : 0;
+    }
+    return enabled == 1;
+}
+
+static std::map<std::string, int> & cuda8_rejected_ops() {
+    static std::map<std::string, int> m;
+    return m;
+}
+
+static std::mutex & cuda8_rejected_mutex() {
+    static std::mutex m;
+    return m;
+}
+
+// e.g. "GLU/swiglu dst=f32 src0=f32" - enough to identify what to implement,
+// without so much detail that every shape becomes its own entry.
+static std::string cuda8_op_signature(const struct ggml_tensor * op) {
+    std::string s = ggml_op_name(op->op);
+
+    if (op->op == GGML_OP_UNARY) {
+        s += "/";
+        s += ggml_unary_op_name(ggml_get_unary_op(op));
+    } else if (op->op == GGML_OP_GLU) {
+        s += "/";
+        s += ggml_glu_op_name(ggml_get_glu_op(op));
+    }
+
+    s += " dst=";
+    s += ggml_type_name(op->type);
+
+    for (int i = 0; i < 2; i++) {
+        if (op->src[i] != NULL) {
+            s += (i == 0) ? " src0=" : " src1=";
+            s += ggml_type_name(op->src[i]->type);
+        }
+    }
+
+    // SOFT_MAX is refused for reasons invisible in the types alone (G37).
+    if (op->op == GGML_OP_SOFT_MAX && !ggml_cuda8_soft_max_is_plain(op)) {
+        s += " [soft_max_ext: mask/sinks/scale/max_bias]";
+    }
+
+    return s;
+}
+
+static void cuda8_print_rejection_summary() {
+    std::map<std::string, int> & m = cuda8_rejected_ops();
+    if (m.empty()) {
+        return;
+    }
+
+    std::vector<std::pair<int, std::string> > sorted;
+    for (std::map<std::string, int>::const_iterator it = m.begin(); it != m.end(); ++it) {
+        sorted.push_back(std::make_pair(it->second, it->first));
+    }
+    std::sort(sorted.begin(), sorted.end());
+    std::reverse(sorted.begin(), sorted.end());
+
+    std::fprintf(stderr, "\nggml-cuda8: ops refused by supports_op (ran on CPU), by frequency:\n");
+    for (size_t i = 0; i < sorted.size(); i++) {
+        std::fprintf(stderr, "  %8d  %s\n", sorted[i].first, sorted[i].second.c_str());
+    }
+    std::fprintf(stderr, "\n");
+}
+
+static void cuda8_note_rejected(const struct ggml_tensor * op) {
+    if (!cuda8_debug_ops_enabled()) {
+        return;
+    }
+
+    const std::string sig = cuda8_op_signature(op);
+
+    std::lock_guard<std::mutex> lock(cuda8_rejected_mutex());
+    std::map<std::string, int> & m = cuda8_rejected_ops();
+    std::map<std::string, int>::iterator it = m.find(sig);
+
+    if (it != m.end()) {
+        it->second += 1;
+        return;
+    }
+
+    std::fprintf(stderr, "ggml-cuda8: unsupported -> CPU: %s\n", sig.c_str());
+    m.insert(std::make_pair(sig, 1));
+
+    static bool summary_registered = false;
+    if (!summary_registered) {
+        std::atexit(cuda8_print_rejection_summary);
+        summary_registered = true;
+    }
+}
+
+static bool ggml_backend_cuda8_device_supports_op_impl(const struct ggml_tensor * op);
+
 static bool ggml_backend_cuda8_device_supports_op(ggml_backend_dev_t dev,
                                                     const struct ggml_tensor * op) {
     (void) dev;
 
+    const bool supported = ggml_backend_cuda8_device_supports_op_impl(op);
+    if (!supported) {
+        cuda8_note_rejected(op);
+    }
+    return supported;
+}
+
+static bool ggml_backend_cuda8_device_supports_op_impl(const struct ggml_tensor * op) {
     switch (op->op) {
         // no-ops (metadata only)
         case GGML_OP_NONE:

@@ -23,10 +23,17 @@ G36 is the last green checkpoint. The backend:
 
 **Build mode (settled, not a stopgap).** Two-stage, split by C++ standard:
 
-| Stage | Where | Toolchain | Produces |
-|---|---|---|---|
-| 1. Kernels | NVIDIA ML container, Ubuntu 16.04 base | CUDA **8.0.61**, C++11 build tools | `libggml-cuda8-kernels.a` |
-| 2. Host | Ubuntu 22.04 host | C++17 build tools | `llama-server` / `rpc-server`, importing stage 1 via `GGML_CUDA8_HOST` |
+| Stage | Where | Toolchain | Configures | Produces |
+|---|---|---|---|---|
+| 1. Kernels | NVIDIA ML container, Ubuntu 16.04 base | CUDA **8.0.61**, GCC 5.4 / C++11, cmake 3.5.1 | `ggml/src/ggml-cuda8` standalone → `build-cuda8-kernels` | `libggml-cuda8-kernels.a` + all smoke targets |
+| 2. Host | Ubuntu 22.04 host | C++17 build tools, cmake ≥3.14 | repo root | `llama-server` / `rpc-server`, importing stage 1 via `GGML_CUDA8_HOST` |
+
+Stage 1 configures the `ggml-cuda8` subdirectory rather than the repo root: the root
+requires cmake ≥3.14 and the container has 3.5.1, while `ggml-cuda8/CMakeLists.txt` is a
+standalone project needing only 3.5 that reaches the ggml core by relative path. `ggml_abort`
+and the `ggml_backend_tensor_*` symbols are handled by a separate `ggml-cuda8-ggml-core`
+library plus `--gc-sections`; see G38F in `ggml-cuda8/README.md` for why neither can go into
+the kernel archive itself.
 
 The `ggml-cuda8` public surface is C, so no C++ ABI crosses the boundary. Note that `rpc-server`
 is in scope, which means the Fermi box can also be driven as a *remote* ggml backend rather than
@@ -130,7 +137,7 @@ plausible-looking wrong attention weights.
 `scale != 1.0f` or `max_bias != 0.0f`. That restores correct CPU fallback in one commit. The real
 fix (G40) follows.
 
-**3.2 `gridDim.x` maxes at 65535 on compute 2.x — FIXED in G38, pending hardware regression.**
+**3.2 `gridDim.x` maxes at 65535 on compute 2.x — FIXED in G38, verified on hardware (21/21).**
 (it is 2³¹−1 only from sm_30)
 
 **Correction to an earlier draft of this document:** this was described as failing *silently with
@@ -195,7 +202,7 @@ accordingly:
 
 | # | Work | Rationale |
 |---|---|---|
-| ~~**G38**~~ | ~~Grid clamps on the remaining launches; oversized-tensor smoke; `-Xptxas -v`~~ | **Code done, pending hardware regression.** §3.2, §3.3. Register baseline still to be measured. |
+| ~~**G38**~~ | ~~Grid clamps on the remaining launches; oversized-tensor smoke; `-Xptxas -v`~~ | **DONE — PASS on GTX 560, 21/21.** §3.2. Register baseline (§3.3) wired but not yet measured. |
 | **G39** | Load a real GGUF through `llama-server` (or `rpc-server`) with `GGML_CUDA8_HOST`; log the CPU/GPU split count and per-op fallback reasons | **Measure before optimizing.** With K-quants working, a Q4_K model is now a realistic first load. The split log turns the rest of this list from guesswork into data. |
 | **G40** | `GLU` / `SWIGLU` (+ `UNARY` SILU) | Recovers the FFN — the largest single block of FLOPs, and now the biggest hole. |
 | **G41** | `SOFT_MAX_EXT` proper: mask tensor + scale + `max_bias` | Reverts G37's restriction. Real attention softmax currently runs on CPU. |

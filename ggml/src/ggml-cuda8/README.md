@@ -1462,8 +1462,7 @@ mask/scale/max_bias properly in the kernel and lifts the restriction.
 <!-- G38_STATUS_START -->
 ## G38 status: Fermi grid-limit clamps across the older kernels
 
-Status: **implemented, NOT yet verified on hardware.** Needs a regression run on the
-GTX 560 before this is marked PASS.
+Status: **PASS on GTX 560 / CUDA 8 / Fermi** (21/21 regression).
 
 On compute capability 2.x the maximum `gridDim.x` is 65535 (2^31-1 only from sm_30).
 At 256 threads/block that ceiling is hit at ~16.7M work items - a 4096x4096 tensor,
@@ -1485,7 +1484,10 @@ Validated G38 checkpoints:
 - **G38B**: 14 launches converted across 9 files.
 - **G38C**: `ggml-cuda8-oversized-smoke` added.
 - **G38D**: `-DGGML_CUDA8_PTXAS_VERBOSE=ON` added for the register baseline.
-- **G38E**: *pending* - full regression on GTX 560.
+- **G38E**: full regression on GTX 560, **21/21 pass** - the 4 primary targets,
+  10 standalone kernel smokes for everything rewritten here, and the 7
+  end-to-end graph smokes including the G35 e2e pipeline.
+- **G38F**: build system reworked so the container can configure at all (below).
 
 Two patterns, both requiring the kernel-side loop AND the host-side clamp (the clamp
 alone would drop the work that does not fit in the first 65535 blocks):
@@ -1536,7 +1538,141 @@ produces correct output at the start and stale poison after it.
 Register baseline (`-DGGML_CUDA8_PTXAS_VERBOSE=ON`) is wired up but **not yet
 measured**. sm_2x caps registers at 63 per thread; the K-quant kernels dequantize a
 whole block into registers, so they are the ones to look at first.
+
+### G38F: the container can now configure the build itself
+
+The old `build-cuda8-parent` tree was configured against the repo root by cmake
+3.5.1, back when the root still accepted that. An upstream merge later raised
+`cmake_minimum_required` to 3.14 in both `CMakeLists.txt` and `ggml/CMakeLists.txt`,
+which stranded the tree: cmake 3.5.1 could still drive `cmake --build` on it, but
+could never regenerate it. Adding any new target therefore failed with
+`No rule to make target`, with nothing in the error pointing at the cause.
+
+`run-regression.sh` now configures **`ggml/src/ggml-cuda8` directly**, into
+`build-cuda8-kernels`. That directory is its own project needing only cmake 3.5 and
+reaching the ggml core by relative path, so the parent project is not involved in
+building kernels or smokes at all. `build-cuda8-parent` can be deleted.
+
+Three things a clean configure exposed, all previously masked by stale objects in
+the old tree:
+
+1. **`GGML_VERSION` / `GGML_COMMIT`** are defined by the parent, and `../ggml.c`
+   requires them. `CMakeLists.txt` now supplies fallbacks when configured standalone.
+
+2. **`ggml_abort` was unresolved** for every smoke that links the kernel archive
+   without compiling `../ggml.c`. The inline helpers in `ggml-impl.h`
+   (`ggml_set_op_params`, `ggml_hash_insert`) expand to `GGML_ASSERT`, which calls
+   it. New `ggml-cuda8-ggml-core` static library provides it.
+
+   Kept deliberately *separate* from `ggml-cuda8-kernels`: the host build imports
+   `libggml-cuda8-kernels.a` as a raw archive next to its own `ggml-base`, so
+   `ggml.c` inside that archive would collide at link time. As a CMake dependency
+   the archive stays byte-identical.
+
+3. **`ggml_backend_tensor_set` / `_memset` were unresolved.** `../ggml.c` calls them
+   from `ggml_set_zero()` and `ggml_graph_reset()`; they live in
+   `../ggml-backend.cpp`, which cannot be compiled here (the full ggml target drags
+   in C++17 sources that GCC 5.4 at C++11 rejects). Fixed with the same standalone-GC
+   pattern the graph-builder targets already use: `-ffunction-sections
+   -fdata-sections` on the core library, `-Wl,--gc-sections` propagated PUBLIC to the
+   executables. Nothing here calls those functions, the sections are discarded, and
+   GNU ld does not report undefined references from discarded sections.
+
+Also: `ggml-cuda8-host.cmake` now accepts the flat standalone archive layout
+(`<build>/libggml-cuda8-kernels.a`) as well as the parent's nested one, so the
+host-side `GGML_CUDA8_HOST` import keeps working with either build.
 <!-- G38_STATUS_END -->
+
+<!-- G39_STATUS_START -->
+## G39 status: first real GGUF, and the CPU/GPU split log
+
+Status: **tooling in place, not yet run.** The result of this checkpoint is a
+measurement, not a feature: it replaces guesswork about which ops matter with a
+frequency-ordered list.
+
+Everything before this point was validated against hand-built graphs. A real GGUF
+graph differs in ways that are hard to predict, so the point of G39 is to stop
+predicting and look.
+
+### What was added
+
+**`GGML_CUDA8_DEBUG_OPS=1`** - `supports_op` returns a bare bool, so a model that
+silently falls back to the CPU leaves no record of what was refused.
+`ggml-cuda8-backend-reg.cpp` now logs each distinct refused op signature once when
+first seen, and prints a frequency-ordered summary at exit:
+
+    ggml-cuda8: ops refused by supports_op (ran on CPU), by frequency:
+           896  SOFT_MAX dst=f32 src0=f32 src1=f32 [soft_max_ext: mask/sinks/scale/max_bias]
+           448  GLU/swiglu dst=f32 src0=f32
+            32  GET_ROWS dst=f32 src0=q6_K src1=i32
+
+That ordering *is* the roadmap for G40 onwards. The signature carries op, GLU/unary
+subtype, and dst/src0/src1 types - enough to identify the work without every shape
+becoming its own entry. SOFT_MAX additionally reports when it was refused for
+soft_max_ext features rather than types (the G37 guard), since that is invisible in
+the types alone.
+
+This complements rather than duplicates ggml's own `GGML_SCHED_DEBUG=2`, which shows
+*where* each node ran and where the split boundaries fall, but never why a backend
+declined a node.
+
+**`stage-host-artifacts.sh`** - `ggml-cuda8-host.cmake` needs `cuda8-libs/` and
+`cuda8-headers/` next to the archive, and the CUDA 8 toolkit only exists inside the
+container. This copies them onto the shared volume and refuses to run against a
+non-CUDA-8 toolkit, since staging a newer runtime would produce a host binary that
+cannot talk to sm_21 kernels.
+
+### Procedure
+
+In the CUDA 8 container:
+
+    ./ggml/src/ggml-cuda8/run-regression.sh          # builds the archive
+    ./ggml/src/ggml-cuda8/stage-host-artifacts.sh
+
+On the Ubuntu 22.04 host:
+
+    cmake -S . -B build-host \
+          -DGGML_CUDA=OFF \
+          -DGGML_CUDA8_HOST=ON \
+          -DGGML_CUDA8_LIB_DIR=<repo>/build-cuda8-kernels
+    cmake --build build-host -j$(nproc) --target llama-cli llama-server
+
+    GGML_CUDA8_DEBUG_OPS=1 GGML_SCHED_DEBUG=2 \
+      ./build-host/bin/llama-cli -m <model>.Q4_K_M.gguf -ngl 99 -p "hello" -n 8 \
+      2> split.log
+
+`llama-cli` is the simplest instrument for a first run; `llama-server` is the actual
+target and uses the same backend path.
+
+### Expected obstacle: the CUDA 8 GCC check
+
+CUDA 8's `crt/host_config.h` contains
+
+    #if __GNUC__ > 5 || (__GNUC__ == 5 && __GNUC_MINOR__ > 3)
+    #error -- unsupported GNU version! gcc versions later than 5.3 are not supported!
+
+and the host build compiles `ggml-cuda8-backend-reg.cpp` with the host GCC (11.x),
+which includes `cuda_runtime.h` from the staged CUDA 8 headers. This is expected to
+fire on the first host build.
+
+It is a header assertion, not a real ABI constraint: the file only calls a handful of
+runtime API functions (`cudaGetDeviceCount`, `cudaGetDeviceProperties`,
+`cudaMemGetInfo`), all plain C entry points that are ABI-stable. Options, in order of
+preference:
+
+1. Compile just that one file with `-D__NV_NO_HOST_COMPILER_CHECK__` (if CUDA 8's
+   header honours it) or with the check patched out of the staged copy of
+   `cuda8-headers/crt/host_config.h` - the staged copy exists precisely so it can be
+   modified without touching the container.
+2. Compile that one file with `g++-5` on the host, if it is installed. It has a C
+   interface, so it links against the C++17 build cleanly.
+3. Declare the few runtime functions by hand in the host TU and drop the
+   `cuda_runtime.h` include entirely.
+
+### Results
+
+*Not yet run.* Paste the `GGML_CUDA8_DEBUG_OPS` summary here once it is.
+<!-- G39_STATUS_END -->
 
 
 
