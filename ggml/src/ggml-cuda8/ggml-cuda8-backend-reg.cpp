@@ -229,7 +229,14 @@ static bool ggml_backend_cuda8_device_supports_op(ggml_backend_dev_t dev,
 
 static bool ggml_backend_cuda8_device_supports_op_impl(const struct ggml_tensor * op) {
     switch (op->op) {
-        case GGML_OP_MUL_MAT: {
+        // no-ops (metadata only)
+        case GGML_OP_NONE:
+        case GGML_OP_RESHAPE:
+        case GGML_OP_VIEW:
+        case GGML_OP_PERMUTE:
+        case GGML_OP_TRANSPOSE:
+            return true;
+		case GGML_OP_MUL_MAT: {
             if (!op->src[0] || !op->src[1]) return false;
             if (op->type != GGML_TYPE_F32) return false;
             if (op->src[1]->type != GGML_TYPE_F32) return false;
