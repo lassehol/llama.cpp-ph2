@@ -164,7 +164,7 @@ __global__ void kernel_mul_mat_q4k_f32(
     block_reduce_sum_inplace(smem, tid);
 
     if (tid == 0) {
-        dst[row * ne11 + col] = smem[0];
+        dst[col * ne01 + row] = smem[0]; // ggml dst: (row,col) at row + col*ne01
     }
 }
 

@@ -157,7 +157,7 @@ __global__ void __launch_bounds__(256, 2) kernel_mul_mat_q6k_f32(
     block_reduce_sum_inplace_q6(smem, tid);
 
     if (tid == 0) {
-        dst[row * ne11 + col] = smem[0];
+        dst[col * ne01 + row] = smem[0];
     }
 }
 
