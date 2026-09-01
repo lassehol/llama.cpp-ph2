@@ -17,6 +17,11 @@
 #include <cstdlib>
 #include <cstring>
 
+// This TU calls the CUDA runtime directly (cudaDeviceSynchronize et al) and does
+// not get cuda_runtime.h transitively: the ggml-cuda8-*.h chain reaches only
+// ggml-cuda8-context.h / -backend.h, neither of which includes it.
+#include <cuda_runtime.h>
+
 struct ggml_cuda8_ggml_backend_context {
     int device;
 };
