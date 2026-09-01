@@ -151,6 +151,7 @@ cuda_add_library(ggml-cuda8-kernels STATIC
     ggml-cuda8-mul.cu
     ggml-cuda8-rope.cu
     cpy.cu
+	ggml-cuda8-cont.cu
     ggml-cuda8-diagmask.cu
     ggml-cuda8-getrows.cu
     ggml-cuda8-q4k.cu
