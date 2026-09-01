@@ -304,15 +304,15 @@ static bool ggml_backend_cuda8_device_supports_op_impl(const struct ggml_tensor 
 
         // RMS normalization
         case GGML_OP_RMS_NORM:
-            return false; // TEMP BISECT G42-debug
-			//return (op->type == GGML_TYPE_F32 &&
-              //      op->src[0] && op->src[0]->type == GGML_TYPE_F32);
+			return (op->type == GGML_TYPE_F32 &&
+                    op->src[0] && op->src[0]->type == GGML_TYPE_F32);
 
         // rotary positional embeddings: NORMAL (0) and NEOX (2)
         case GGML_OP_ROPE: {
-            if (op->type != GGML_TYPE_F32) return false;
-            if (!op->src[0] || op->src[0]->type != GGML_TYPE_F32) return false;
-            if (!op->src[1] || op->src[1]->type != GGML_TYPE_I32) return false;
+			return false; // TEMP BISECT G42-debug
+           // if (op->type != GGML_TYPE_F32) return false;
+            //if (!op->src[0] || op->src[0]->type != GGML_TYPE_F32) return false;
+            //if (!op->src[1] || op->src[1]->type != GGML_TYPE_I32) return false;
 
             // G45: freq_factors. rope_yarn divides theta by freq_factors[pair]
             // (ggml-cpu/ops.cpp, ggml_rope_cache_init). The kernel does not read
