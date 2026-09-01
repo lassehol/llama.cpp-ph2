@@ -237,6 +237,7 @@ static bool ggml_backend_cuda8_device_supports_op_impl(const struct ggml_tensor 
         case GGML_OP_TRANSPOSE:
             return true;
 		case GGML_OP_MUL_MAT: {
+			//if (op->src[0]->type == GGML_TYPE_F32) return false; // TEMP
             if (!op->src[0] || !op->src[1]) return false;
             if (op->type != GGML_TYPE_F32) return false;
             if (op->src[1]->type != GGML_TYPE_F32) return false;
@@ -281,6 +282,7 @@ static bool ggml_backend_cuda8_device_supports_op_impl(const struct ggml_tensor 
         // would silently produce wrong attention weights. See
         // ggml_cuda8_soft_max_is_plain().
 		case GGML_OP_SOFT_MAX: {
+			//if (op->src[0]->type == GGML_TYPE_F32) return false; // TEMP
 			if (op->type != GGML_TYPE_F32) return false;
 			if (!op->src[0] || op->src[0]->type != GGML_TYPE_F32) return false;
 			if (ggml_cuda8_soft_max_is_plain(op)) return true;
@@ -309,10 +311,10 @@ static bool ggml_backend_cuda8_device_supports_op_impl(const struct ggml_tensor 
 
         // rotary positional embeddings: NORMAL (0) and NEOX (2)
         case GGML_OP_ROPE: {
-			return false; // TEMP BISECT G42-debug
-           // if (op->type != GGML_TYPE_F32) return false;
-            //if (!op->src[0] || op->src[0]->type != GGML_TYPE_F32) return false;
-            //if (!op->src[1] || op->src[1]->type != GGML_TYPE_I32) return false;
+			//return false; // TEMP BISECT G42-debug
+            if (op->type != GGML_TYPE_F32) return false;
+            if (!op->src[0] || op->src[0]->type != GGML_TYPE_F32) return false;
+            if (!op->src[1] || op->src[1]->type != GGML_TYPE_I32) return false;
 
             // G45: freq_factors. rope_yarn divides theta by freq_factors[pair]
             // (ggml-cpu/ops.cpp, ggml_rope_cache_init). The kernel does not read
@@ -347,6 +349,7 @@ static bool ggml_backend_cuda8_device_supports_op_impl(const struct ggml_tensor 
 
         // contiguous copy
         case GGML_OP_CONT:
+			//if (op->src[0]->type == GGML_TYPE_F32) return false; // TEMP
             return (op->type == GGML_TYPE_F32 &&
                     op->src[0] && op->src[0]->type == GGML_TYPE_F32);
 
@@ -360,6 +363,7 @@ static bool ggml_backend_cuda8_device_supports_op_impl(const struct ggml_tensor 
         // the scheduler has nowhere else to put it and aborts. Hence the F32
         // cache requirement (--cache-type-k/v f32) until G49 adds F16 stores.
         case GGML_OP_SET_ROWS: {
+			//if (op->src[0]->type == GGML_TYPE_F32) return false; // TEMP
             if (op->type != GGML_TYPE_F32) return false;
             if (!op->src[0] || op->src[0]->type != GGML_TYPE_F32) return false;
             if (!op->src[1] || op->src[1]->type != GGML_TYPE_I64) return false;
