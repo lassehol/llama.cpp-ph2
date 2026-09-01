@@ -63,6 +63,7 @@ PRIMARY=(
     ggml-cuda8-ggml-backend-supports-op-smoke
     ggml-cuda8-ggml-backend-graph-compute-softmax-smoke
     ggml-cuda8-ggml-backend-graph-compute-attnlike-smoke
+	ggml-cuda8-poison-smoke
 )
 
 # Standalone kernel smokes for every kernel G38 rewrote. These use small
