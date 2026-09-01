@@ -228,6 +228,11 @@ static bool ggml_backend_cuda8_device_supports_op(ggml_backend_dev_t dev,
 }
 
 static bool ggml_backend_cuda8_device_supports_op_impl(const struct ggml_tensor * op) {
+    // ===== TEST-B EXPERIMENT — revert after measuring =====
+    // Force every op except GET_ROWS to CPU. Isolates whether the
+    // per-layer graph split dominates wall-clock vs. GPU compute.
+    if (op->op != GGML_OP_GET_ROWS) return false;
+    // ===== END TEST-B =====
     switch (op->op) {
         // no-ops (metadata only)
         case GGML_OP_NONE:
