@@ -1952,13 +1952,21 @@ New dispatch op: `GGML_CUDA8_OP_SWIGLU_F32` (20 dispatch ops now).
 <!-- G40_STATUS_END -->
 
 <!-- G43_STATUS_START -->
-## G43 status: SET_ROWS - the KV cache write
+## G43 – SET_ROWS
 
-Status: **implemented, NOT yet verified on hardware.**
+Status: ✅ Hardware verified on GTX 560
 
-    dst[idx[i]] = src0[i]
+Verification:
+- Removed `-nkvo`
+- Used:
+  --cache-type-k f32
+  --cache-type-v f32
+- Observed `SET_ROWS_F32` execution on CUDA8 backend
+- Generation completed successfully
+- `SET_ROWS` no longer appears in unsupported-op statistics
 
-Mirrors `ggml_compute_forward_set_rows_impl` (`ggml-cpu/ops.cpp`) for F32 -> F32.
+Conclusion:
+G43 eliminates the scheduler blockage that previously required `-nkvo`.
 
 ### Why this was reordered ahead of G41/G42
 
