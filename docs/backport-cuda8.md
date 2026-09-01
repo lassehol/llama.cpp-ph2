@@ -110,8 +110,8 @@ cuBLAS SGEMM works fine on CUDA 8 / Fermi. There is currently no cuBLAS usage an
 Three issues, all of which produce **wrong numbers rather than errors**, and none of which the
 current smoke tests can catch because they use small, simple shapes.
 
-**3.1 `SOFT_MAX_EXT` is accepted but computed incorrectly. — FIXED in G37, pending hardware
-regression.** (Description retained for context.)
+**3.1 `SOFT_MAX_EXT` is accepted but computed incorrectly. — FIXED in G37, verified on hardware.**
+(Description retained for context.)
 `supports_op` (`backend-reg.cpp:127-129`) claims any F32 `GGML_OP_SOFT_MAX` **without inspecting
 `src[1]` (the mask) or the scale/`max_bias` params**. The kernel launcher takes only
 `(src, dst, rows, cols)` (`softmax.cu:100-115`) and `op_params` is never read for SOFT_MAX anywhere
@@ -169,7 +169,7 @@ Ordered by "cost to implement ÷ graph splits eliminated", not by tidiness.
 
 | # | Work | Rationale |
 |---|---|---|
-| ~~**G37**~~ | ~~Tighten `supports_op` for SOFT_MAX (reject mask / sinks / scale / max_bias)~~ | **Done, pending hardware regression.** §3.1. See `ggml-cuda8/README.md` G37. |
+| ~~**G37**~~ | ~~Tighten `supports_op` for SOFT_MAX (reject mask / sinks / scale / max_bias)~~ | **DONE — PASS on GTX 560, 11/11.** §3.1. See `ggml-cuda8/README.md` G37. |
 | **G38** | Grid-dim clamp + grid-stride loops across all 17 launches; oversized-tensor smoke; `-Xptxas -v` register baseline | §3.2, §3.3. Must precede any real model run. |
 | **G39** | Load a real GGUF through `llama-server` (or `rpc-server`) with `GGML_CUDA8_HOST`; log the CPU/GPU split count and per-op fallback reasons | **Measure before optimizing.** The split log turns the rest of this list from guesswork into data. |
 | **G40** | Q4_0 MMV (matrix-vector) | Unlocks models that fit in 1 GB. Highest value per line of code. |
