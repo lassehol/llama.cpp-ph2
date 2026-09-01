@@ -2033,6 +2033,334 @@ New dispatch op: `GGML_CUDA8_OP_SET_ROWS_F32` (21 dispatch ops now).
 <!-- G43_STATUS_END -->
 
 
+### G51 status: dispatcher robustness hardening (post-G45)
+
+Status: **PASS on GTX 560 / CUDA 8 / Fermi** (24/24 regression, including one
+new hardware-verified fault-injection target).
+
+G51 is a correctness/robustness pass rather than a new-op checkpoint. It
+closes four gaps found during a code review of the dispatcher and backend
+layers, none of which were caught by the existing smoke suite because they
+only manifest under partial-failure or malicious/malformed-input conditions
+that the happy-path fixtures don't exercise.
+
+#### G51A: `exec_add_f32` buffer leak on partial allocation failure
+
+`ggml_cuda8_exec_add_f32()` (ggml-cuda8-add.cpp) allocated three CUDA8
+backend buffers (`b0`, `b1`, `bd`) in sequence but only freed buffers already
+allocated on a *later* allocation failure in the Q8_0 MUL_MAT and scalar
+ADD/MUL paths — the plain ADD_F32 path returned `-1` on a second or third
+allocation failure without freeing the first one or two buffers already
+allocated. ADD_F32 is one of the most frequently dispatched ops (every
+residual/bias-add node in the graph-builder pipelines goes through it), so
+a leak here compounds under repeated allocation pressure rather than being
+a one-off. Fixed to match the cleanup pattern already used by
+`exec_mul_mat_q8_0_f32_vec()` and `exec_scalar_f32_host_staging()`: each
+allocation failure now frees every buffer already allocated before
+returning.
+
+Verified via `ggml-cuda8-add-smoke` (unchanged behavior on the success
+path) plus the full graph-builder regression.
+
+#### G51B: ROPE/SWIGLU `supported_*` gates missing `op_params` validation
+
+`ggml_cuda8_supported_rope_f32()` and `ggml_cuda8_supported_swiglu_f32()`
+(ggml-cuda8-dispatch.cpp) validated only tensor types/shapes — the
+`op_params`-level checks (ROPE: `mode`, `ext_factor`, `attn_factor`,
+`freq_factors`/`src[2]`; SWIGLU: the `glu_op` variant) lived exclusively in
+the `exec_*` functions, with an explicit comment noting this was "defence
+in depth... reaching here means the scheduler bypassed supports_op." This
+is the same class of bug G37 fixed for SOFT_MAX_EXT: if a scheduler's
+`supports_op` hook is wired to `ggml_cuda8_dispatch_supported()` (which
+`ggml_cuda8_ggml_backend_dispatch_op()` does call directly), a YaRN-scaled
+ROPE node or a non-SWIGLU GLU node (GEGLU, SWIGLU_OAI, etc.) would be
+accepted as "supported," assigned to this backend by the scheduler, and
+only discovered unsupported once `graph_compute()` was already mid-flight
+— aborting the whole graph instead of the scheduler cleanly routing it to
+CPU or another backend.
+
+Moved the `op_params` checks into the `supported_*` gates (the exec-side
+checks remain as defence-in-depth, with their error messages updated to
+note they are now unreachable in the normal case). No behavior change on
+any currently-passing smoke case — G45's ROPE NeoX and G40's SWIGLU paths
+are unaffected, since both already pass the (now duplicated) checks.
+
+Verified via `ggml-cuda8-rope-smoke`, `ggml-cuda8-swiglu-smoke`, and full
+regression.
+
+#### G51C: K-quant `supported_*` gates missing null-data and residency checks
+
+`supported_mul_mat_q4k_f32`, `supported_mul_mat_q6k_f32`,
+`supported_get_rows_q4k`, `supported_get_rows_q6k` checked only
+`!src0 || !src1 || !dst` (struct-pointer non-null), unlike the Q8_0 MUL_MAT
+path's `check_tensor_ptrs()`, which additionally rejects null `->data`. The
+`exec_*` counterparts for these four ops pass `src0->data`/`src1->data`/
+`dst->data` straight into the kernel launcher with no host<->device
+staging — the architecturally correct choice for weight/activation
+throughput, since the ggml scheduler contract guarantees CUDA8-buffer
+residency for any tensor assigned to this backend under normal
+`graph_compute` — but it left no defence for direct-dispatch callers (e.g.
+tests bypassing `graph_compute`) or a scheduler bug that assigns a
+host-backed tensor here, which would fault asynchronously inside the
+kernel rather than failing cleanly at the dispatch boundary.
+
+Fixed: all four `supported_*` gates now call the shared `check_tensor_ptrs()`
+helper (closing the null-data gap), plus a debug-build-only
+(`#ifndef NDEBUG`) residency diagnostic using the existing
+`ggml_cuda8_ggml_tensor_is_device_resident()` registry lookup. The
+diagnostic logs a loud warning if a K-quant tensor isn't registered as
+CUDA8-resident but does not change `supported()`'s return value, so it
+cannot introduce a false rejection for any currently-passing path.
+
+Verified via `ggml-cuda8-getrows-smoke`, `ggml-cuda8-dispatch-all-smoke`,
+and full regression — the residency diagnostic was live during this run
+(non-`NDEBUG` build) and produced no warnings, confirming the K-quant
+smoke fixtures do allocate through the CUDA8 buffer registry as expected.
+
+#### G51D: sticky poisoned-device flag for fatal CUDA errors — hardware verified
+
+`cuda8_backend_synchronize()` (ggml-cuda8-ggml-backend.cpp) previously only
+logged a `cudaDeviceSynchronize()` failure to stderr and returned —
+`ggml_backend_i::synchronize` is `void(*)(ggml_backend_t)`, so there was no
+return channel to propagate failure through in the first place. A fatal
+CUDA error class (`cudaErrorIllegalAddress`, `cudaErrorLaunchFailure`,
+`cudaErrorECCUncorrectable`, `cudaErrorAssert`) typically invalidates the
+CUDA context — and on most driver versions, the whole per-process CUDA
+state for that device — until process exit. Silently logging and
+continuing meant the *next* `graph_compute()` call (a fresh
+`ggml_cuda8_context_create()`) would also fail, but with a generic,
+unrelated-looking message instead of one pointing back at the original
+fault.
+
+Added a process-wide `std::atomic<bool> g_cuda8_device_poisoned`, latched
+by `cuda8_backend_synchronize()` on a narrow allow-list of fatal error
+codes (deliberately not "anything != cudaSuccess" — recoverable
+launch-configuration errors like the grid-size class G38 fixed are
+excluded). Checked at the top of both `cuda8_backend_graph_compute()` and
+`ggml_cuda8_ggml_backend_dispatch_op()`, so any further dispatch attempt
+after a fatal fault is refused immediately with a message pointing back at
+the original error, rather than failing later with an opaque, unrelated
+CUDA error. Also fixed `cuda8_backend_synchronize()` to call
+`cudaSetDevice(ctx->device)` before syncing — previously dead code for the
+single-GPU-per-process case, but a latent multi-device bug.
+
+New smoke target: **`ggml-cuda8-poison-smoke`**. Deliberately launches a
+kernel against unregistered host memory (a `malloc()`'d pointer reinterpreted
+as a device pointer under CUDA's Unified Virtual Addressing) to provoke a
+real illegal-address fault, then verifies:
+1. the flag starts clean,
+2. a control `ADD_F32` dispatch succeeds on the healthy device,
+3. the injected fault + `synchronize()` latches the flag,
+4. `ggml_cuda8_ggml_backend_device_is_poisoned()` reports `1`,
+5. the same dispatch call is refused immediately post-injection,
+6. the flag stays latched across a second `synchronize()` call.
+
+**Verified on real hardware** — GTX 560 / CUDA 8.0.61 / driver 390.157. The
+injection technique reliably faults on this driver/hardware combination
+(rather than landing in the test's `INCONCLUSIVE` degrade path), and the
+full assertion chain passed: fault detected, flag latched, subsequent
+dispatch refused, latch confirmed sticky across a second synchronize call.
+This is the first checkpoint in this backend's history to hardware-verify
+a fault-handling path rather than only a happy path.
+
+#### Regression
+
+Added to the `PRIMARY` target set in `run-regression.sh` (targets exercising
+the most recent changes), alongside `ggml-cuda8-oversized-smoke` and the
+G37/supports-op targets:
+
+```
+PRIMARY=(
+    ggml-cuda8-oversized-smoke
+    ggml-cuda8-ggml-backend-supports-op-smoke
+    ggml-cuda8-ggml-backend-graph-compute-softmax-smoke
+    ggml-cuda8-ggml-backend-graph-compute-attnlike-smoke
+    ggml-cuda8-poison-smoke
+)
+```
+
+Full container regression: **24/24 pass** (was 23/23 before G51D added
+`ggml-cuda8-poison-smoke`).
+
+#### Notes
+
+- None of G51A–D add or change dispatch op coverage — the 21 dispatch ops
+  + 5 no-ops inventory from G43 is unchanged. This checkpoint is purely
+  about failure-mode correctness in code paths the existing fixtures
+  already exercised on the success side.
+- `ggml_cuda8_ggml_backend_device_is_poisoned()` is defined in
+  ggml-cuda8-ggml-backend.cpp but not yet declared in
+  ggml-cuda8-ggml-backend.h — `ggml-cuda8-poison-smoke.cpp` currently
+  carries a local `extern "C"` forward declaration as a stopgap. Worth
+  adding the real prototype to the header the next time that file is
+  touched.
+- The register-spill baseline from G38 (`-DGGML_CUDA8_PTXAS_VERBOSE=ON`,
+  §3.3 in docs/backport-cuda8.md) is still unmeasured — unrelated to this
+  checkpoint, carried over as an open item.
+
+
+### G41 status: SOFT_MAX_EXT proper (mask + scale + ALiBi)
+
+Status: **PASS on GTX 560 / CUDA 8 / Fermi** (25/25 regression).
+
+G41 lifts the G37 restriction for real attention softmax. Through G40, the
+only softmax the CUDA8 backend could compute was the plain row-wise case
+(`ggml_cuda8_soft_max_is_plain()`: no mask, no sinks, scale==1.0f,
+max_bias==0.0f) - anything else fell back to CPU, correctly but slowly,
+since a real attention graph almost always calls `ggml_soft_max_ext(kq,
+mask, scale, max_bias)`. Per the G39 rejection log, this was one of only
+two refusals left per layer after G40/G45 landed (`SOFT_MAX
+soft_max_ext`, 56 occurrences alongside 112 `MUL_MAT f32xf32`) - i.e.
+exactly the attention core.
+
+#### What was added
+
+A new dispatch op, `GGML_CUDA8_OP_SOFTMAX_EXT_F32`, alongside (not
+replacing) the existing plain `SOFTMAX_ROWS_F32` path. The plain path is
+completely unchanged - every pipeline that already used it (G16C, G19A,
+G32A, the whole G16-G35 checkpoint history) still takes the same fast
+path with the same kernel.
+
+The new kernel implements:
+```
+v[c]   = src[c] * scale + (mask ? slope(head) * mask[c] : 0)
+dst[c] = softmax(v)[c]
+```
+with the standard ALiBi per-head slope construction (`n_head_log2`,
+`m0`/`m1` precomputed once on the host from `n_head`/`max_bias`, not
+recomputed per row).
+
+**Explicitly still refused, not silently mishandled** - same philosophy as
+every other guard in this backend (G37's SOFT_MAX_EXT guard, G45's ROPE
+`freq_factors`/`attn_factor` guards):
+- **Attention sinks** (`src[2]`) - not implemented, refused in both
+  `supports_op` and the dispatcher's `supported_*` gate.
+- **Non-F32 (F16) mask** - deferred to the general F16-storage work
+  already tracked as G49. Refused rather than misread.
+
+New files: `ggml-cuda8-softmax-ext.h`, `ggml-cuda8-softmax-ext.cu`,
+`ggml-cuda8-softmax-ext.cpp`, `ggml-cuda8-softmax-ext-smoke.cpp`.
+
+New dispatch op: `GGML_CUDA8_OP_SOFTMAX_EXT_F32` (22 dispatch ops now).
+
+#### Dispatch routing
+
+`GGML_OP_SOFT_MAX` in `ggml-cuda8-ggml-backend.cpp`'s `graph_compute` now
+branches three ways instead of two:
+1. `ggml_cuda8_soft_max_is_plain(node)` -> `SOFTMAX_ROWS_F32` (unchanged
+   fast path).
+2. else if `ggml_cuda8_soft_max_is_supported_ext(node)` -> new
+   `SOFTMAX_EXT_F32` path (mask/scale/ALiBi, no sinks, F32 mask only).
+3. else -> loud dispatch failure (sinks or non-F32 mask reached graph_compute
+   despite supports_op - should be unreachable, same "scheduler bypassed
+   supports_op" defence-in-depth pattern used throughout this backend).
+
+`supports_op` (`ggml-cuda8-backend-reg.cpp`) mirrors this: `is_plain()` OR
+(`is_supported_ext()` AND mask-shape validation) - re-validating shape
+independently rather than trusting the dispatcher alone, the same
+double-gate pattern G51 established for SET_ROWS.
+
+#### A build-system note worth keeping: `.cu` vs `.cpp` for smoke tests
+
+The first attempt at `ggml-cuda8-softmax-ext-smoke` was written as a
+`.cu` file and failed to compile under nvcc with `expected a declaration`
+errors that appeared to originate in unrelated headers
+(`ggml-cuda8-backend-buffer.h`, `ggml-cuda8-context.h`). The smoke
+contained no actual device code (no `__global__`, no `<<<>>>` launches) -
+only host-side CUDA runtime calls plus fake `ggml_tensor` construction to
+exercise `ggml_cuda8_supported_softmax_ext_f32()` directly. nvcc's
+front-end does not parse the full `ggml.h` / `ggml-cuda8-context.h`
+header chain cleanly, even though host GCC 5.4 parses it fine. Renamed to
+`.cpp` (host-compiled, linked against the already-nvcc-compiled
+`ggml-cuda8-kernels` archive) with no other content change and it built
+clean. This matches the existing convention in this directory - every
+other smoke that constructs real `ggml_tensor`/`ggml_cuda8_context`
+structs (`ggml-cuda8-add-smoke`, `ggml-cuda8-softmax-smoke`, ...) is
+already `.cpp`; only kernel-only smokes with no struct dependency
+(`ggml-cuda8-oversized-smoke.cu`, `ggml-cuda8-rope-smoke.cu`) stay `.cu`.
+Worth remembering next time a new smoke needs both a real `ggml_tensor`
+fixture and a CUDA kernel call in the same binary.
+
+#### Verification
+
+Nine numerical configurations, each checked against an independently
+re-derived CPU reference (not sharing code with the kernel - the actual
+check is agreement between two separately-written implementations, the
+same method G40/G45 used):
+- no mask, scale=1 (degenerate case, should match plain softmax
+  numerically even though it takes the new code path)
+- no mask, scale=0.125 (attention scale, no masking - one real shape from
+  the G39 log)
+- mask only, broadcast over heads (`mask_ne2=1`)
+- mask + scale together
+- mask + ALiBi, 4 heads (power-of-two `n_head_log2` case)
+- mask + ALiBi, 6 heads (non-power-of-two `n_head_log2` case - exercises
+  the `m1`/second branch of the slope formula)
+- mask with a per-head mask tensor (`mask_ne2 == ne02`, no broadcast)
+- mask + ALiBi with batch > 1 (`ne03=2`)
+- large columns (`n_kv=1024`) with mask + ALiBi, to exercise the
+  multi-iteration stride loop inside the kernel (not just small
+  single-pass shapes)
+
+Plus five `supported()`-gate rejection cases exercised directly (no GPU
+touch): no-mask valid, F32-mask-broadcast valid, F16-mask refused,
+mask `ne1` mismatch refused, mask `ne2` neither 1 nor `ne02` refused.
+
+All nine numerical cases and all five rejection cases pass on GTX 560 /
+CUDA 8.0.61 / driver 390.157.
+
+#### Fixture fallout in `ggml-cuda8-ggml-backend-supports-op-smoke`
+
+Same class of thing G37 and G45 both hit when they changed what
+`supports_op` accepts: four `SOFT_MAX` fixtures in
+`ggml-cuda8-ggml-backend-supports-op-smoke.cpp` were hardcoded to expect
+`false` and now correctly expect `true` under the new logic:
+- `SOFT_MAX (mask)` -> `SOFT_MAX_EXT (mask)`, moved to the TRUE section
+- `SOFT_MAX (scale!=1)` -> `SOFT_MAX_EXT (scale!=1, no mask)`, moved to
+  the TRUE section (this is literally the real-attention shape from the
+  G39 log)
+- `SOFT_MAX (max_bias)` -> `SOFT_MAX_EXT (mask + max_bias)`, moved to the
+  TRUE section
+- `SOFT_MAX (zero params)` - flipped in place; scale=0.0f with no mask is
+  now a legitimately computable (if unusual) input rather than a rejected
+  one. Not a correctness regression, but this fixture can no longer be
+  relied on to catch an unstamped-`op_params` mistake in a future SOFT_MAX
+  fixture - flagged in an inline comment for whoever touches this file
+  next.
+
+Added one new rejection case that had no coverage before this checkpoint:
+`SOFT_MAX (F16 mask)`, confirming the F16-mask boundary (deferred to G49)
+is actually enforced, not just documented in a comment.
+
+`SOFT_MAX (sinks)` is unaffected and still correctly expects `false`.
+
+#### Regression
+
+Full container regression: **25/25 pass** (was 24/24 after G51 - the new
+`ggml-cuda8-softmax-ext-smoke` target accounts for the difference; the
+`supports-op-smoke` fixture fix did not add or remove a target, only
+corrected four expected-value assertions within it).
+
+#### What's next
+
+Per the G39 re-measurement note, **G41 was explicitly paired with G42**
+("a single unit of work") because both refusals live inside the same
+attention block - implementing only one still leaves the graph splitting
+on every layer. With G41 now done, **G42 (F32xF32 MUL_MAT for the
+attention matmuls) is the remaining half of that pairing** and the next
+highest-value checkpoint.
+
+One correction carried over from the G39 write-up, worth restating here
+since it's easy to lose: the *vector* F32 kernel already in `mmv.cu` is
+**not** a drop-in for G42. The real attention matmuls (K.Q, probs.V) are
+per-head batched and 3D (`ne02`/`ne03`), often on permuted views - this
+is strictly matrix-times-vector, not the batched/permuted shape attention
+actually needs. G42 will likely need to land together with G46
+(permuted/non-contiguous src1 for MUL_MAT) rather than as an isolated
+checkpoint. Worth re-running the `GGML_CUDA8_DEBUG_OPS=1` rejection log
+against a real model now that G41 has landed, to get fresh data before
+committing to G42's exact scope.
+
 
 
 
