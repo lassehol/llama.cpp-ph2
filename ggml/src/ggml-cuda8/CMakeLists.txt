@@ -20,6 +20,10 @@ endif()
 # Do not use enable_language(CUDA) here.
 find_package(CUDA REQUIRED)
 
+# ../ggml-threading.cpp needs pthreads. FindCUDA happens to pull Threads in as a
+# side effect, but don't rely on that.
+find_package(Threads REQUIRED)
+
 message(STATUS "ggml-cuda8: CUDA toolkit root: ${CUDA_TOOLKIT_ROOT_DIR}")
 message(STATUS "ggml-cuda8: CUDA nvcc: ${CUDA_NVCC_EXECUTABLE}")
 message(STATUS "ggml-cuda8: CUDA version: ${CUDA_VERSION}")
@@ -74,6 +78,46 @@ include_directories(
 # orchestration code, not a reusable kernel layer.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# ggml core, for linking into the smoke executables.
+#
+# ggml-cuda8-ggml-backend.cpp and several smokes use the inline helpers in
+# ggml-impl.h (ggml_set_op_params, ggml_hash_insert, ...). Those expand to
+# GGML_ASSERT, which calls ggml_abort() - defined in ../ggml.c. Targets that
+# compile ../ggml.c themselves resolve it; the rest were relying on stale
+# objects in an older build tree and fail to link in a clean one.
+#
+# Deliberately a SEPARATE library rather than more sources in
+# ggml-cuda8-kernels: the host build (GGML_CUDA8_HOST) imports
+# libggml-cuda8-kernels.a as a raw archive next to its own ggml-base, and
+# putting ggml.c inside it would collide at link time. Linking it as a CMake
+# dependency instead leaves the archive itself untouched.
+#
+# Targets that already compile ../ggml.c are unaffected: their own object
+# defines these symbols, so the archive member is never pulled in.
+# ---------------------------------------------------------------------------
+
+add_library(ggml-cuda8-ggml-core STATIC
+    ../ggml.c
+    ../ggml-quants.c
+    ../ggml-threading.cpp
+)
+set_target_properties(ggml-cuda8-ggml-core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+target_include_directories(ggml-cuda8-ggml-core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../include
+)
+
+target_compile_definitions(ggml-cuda8-ggml-core PUBLIC
+    GGML_VERSION="${GGML_VERSION}"
+    GGML_COMMIT="${GGML_COMMIT}"
+)
+
+target_link_libraries(ggml-cuda8-ggml-core
+    ${CMAKE_THREAD_LIBS_INIT}
+)
+
 cuda_add_library(ggml-cuda8-kernels STATIC
     buffer.cu
     mmv.cu
@@ -112,6 +156,7 @@ set_target_properties(ggml-cuda8-kernels PROPERTIES POSITION_INDEPENDENT_CODE ON
 target_compile_definitions(ggml-cuda8-kernels PUBLIC GGML_USE_CUDA8)
 
 target_link_libraries(ggml-cuda8-kernels
+    ggml-cuda8-ggml-core
     ${CUDA_LIBRARIES}
 )
 
