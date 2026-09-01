@@ -480,35 +480,40 @@ static int ggml_cuda8_exec_rope_f32(
         ne0, ne1, ne2, ne3,
         n_dims, mode, freq_base, freq_scale);
 }
-// -- G30A/G55: CONT_F32 -------------------------------------------------------
+// -- G30A/G55: CONT_F32 (strided gather) --------------------------------------
+// G55: CONT exists specifically to make a NON-contiguous tensor contiguous
+// (post-permute, in attention). The old implementation flat-copied src0->data
+// as one contiguous byte run, ignoring src0->nb[], which silently scrambled
+// every permuted input. This version gathers through src0's real strides into
+// a packed dst.
 extern "C" int ggml_cuda8_cont_f32_launch(
         const void * src0, float * dst,
         int ne0, int ne1, int ne2, int ne3,
         size_t nb0, size_t nb1, size_t nb2, size_t nb3);
+
+static int ggml_cuda8_supported_cont_f32(
+        const struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * dst) {
+    (void) ctx;
+    if (src0 == NULL || dst == NULL) return 0;
+    if (src0->type != GGML_TYPE_F32) return 0;
+    if (dst->type  != GGML_TYPE_F32) return 0;
+    // dst must be contiguous (ggml guarantees this for CONT output); the
+    // strided-gather kernel writes it packed.
+    if (dst->nb[0] != sizeof(float)) return 0;
+    return 1;
+}
 
 static int ggml_cuda8_exec_cont_f32(
         struct ggml_cuda8_context * ctx,
         const struct ggml_tensor * src0,
         struct ggml_tensor * dst) {
     (void) ctx;
-    // G55: pass src0's real strides so a permuted/non-contiguous src0 is
-    // gathered correctly, not flat-copied. dst is contiguous (ggml CONT).
     return ggml_cuda8_cont_f32_launch(
         src0->data, (float *) dst->data,
         (int) src0->ne[0], (int) src0->ne[1], (int) src0->ne[2], (int) src0->ne[3],
         src0->nb[0], src0->nb[1], src0->nb[2], src0->nb[3]);
-}
-static int ggml_cuda8_exec_cont_f32(
-        struct ggml_cuda8_context * ctx,
-        const struct ggml_tensor * src0,
-        struct ggml_tensor * dst) {
-    (void) ctx;
-    const int n = (int)(src0->ne[0] * src0->ne[1] * src0->ne[2] * src0->ne[3]);
-    const size_t bytes = (size_t)n * sizeof(float);
-    return ggml_cuda8_cpy_f32_d2d(
-        (const float *) src0->data,
-        (float *)       dst->data,
-        bytes);
 }
 // -- G31A: DIAG_MASK_INF_F32 helpers -----------------------------------------
 extern "C" int ggml_cuda8_op_diag_mask_inf_f32(
