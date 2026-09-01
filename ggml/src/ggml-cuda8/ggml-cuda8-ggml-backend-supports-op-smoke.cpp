@@ -192,6 +192,15 @@ int main() {
     op_t.src[0] = &q8_128x64;
     op_t.src[1] = &f32_128;
     ok &= test_op(dev, "MUL_MAT (Q8_0xF32)", &op_t, true);
+    // G42: MUL_MAT F32xF32 (batched attention matmul, no broadcast).
+    // src0 acts as the "weight" operand [ne00=128, ne01=64], src1 as the
+    // "activation" operand [ne00=128, ne11=1] (single token), dst =
+    // [ne01=64, ne11=1] with ne02=ne03=1 on both sides (no GQA broadcast).
+    op_t = make_fake(GGML_TYPE_F32, 64, 1);
+    op_t.op = GGML_OP_MUL_MAT;
+    op_t.src[0] = &f32_2d;
+    op_t.src[1] = &f32_128;
+    ok &= test_op(dev, "MUL_MAT (F32xF32, batched)", &op_t, true);
     // RMS_NORM
     op_t = make_fake(GGML_TYPE_F32, 128, 1);
     op_t.op = GGML_OP_RMS_NORM;
@@ -267,12 +276,6 @@ int main() {
     ok &= test_op(dev, "SOFT_MAX_EXT (mask + max_bias)", &op_t, true);
     // -- 4. supports_op: FALSE cases --
     std::printf("\n== supports_op: expected FALSE ==\n");
-    // MUL_MAT F32xF32
-    op_t = make_fake(GGML_TYPE_F32, 64, 1);
-    op_t.op = GGML_OP_MUL_MAT;
-    op_t.src[0] = &f32_2d;
-    op_t.src[1] = &f32_128;
-    ok &= test_op(dev, "MUL_MAT (F32xF32)", &op_t, false);
     // ROPE MROPE (mode=8) - different pair layout and section handling
     op_t = make_fake(GGML_TYPE_F32, 64, 1);
     op_t.op = GGML_OP_ROPE;
@@ -373,6 +376,15 @@ int main() {
     op_t.src[1] = &f32_128x8;
     set_glu_params(&op_t, GGML_GLU_OP_SWIGLU_OAI, 0);
     ok &= test_op(dev, "GLU/SWIGLU_OAI", &op_t, false);
+    // G42: MUL_MAT F32xF32 with mismatched reduction dim (ne00) - refused.
+    // src0's ne00=64 does not match src1's ne00=128, so the dot-product
+    // dimension disagrees and supports_op must reject it.
+    ggml_tensor f32_64x8 = make_fake(GGML_TYPE_F32, 64, 8);
+    op_t = make_fake(GGML_TYPE_F32, 8, 1);
+    op_t.op = GGML_OP_MUL_MAT;
+    op_t.src[0] = &f32_64x8;
+    op_t.src[1] = &f32_128;
+    ok &= test_op(dev, "MUL_MAT (F32xF32, ne00 mismatch)", &op_t, false);
     // CPY
     op_t = make_fake(GGML_TYPE_F32, 128, 1);
     op_t.op = GGML_OP_CPY;
