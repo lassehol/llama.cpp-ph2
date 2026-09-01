@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 #include <stdint.h>
 
 struct ggml_cuda8_ggml_buffer_context {
@@ -76,9 +77,9 @@ static void cuda8_free_buffer(ggml_backend_buffer_t buffer) {
     // ggml_backend_buffer_free() calls this hook and then does `delete buffer`
     // itself (ggml-backend.cpp). Freeing it here made that a double free, which
     // glibc reports as "double free or corruption (fasttop)" during teardown.
-    // The struct also belongs to ggml, which allocates it with `new` in
-    // ggml_backend_buffer_init() - so releasing it with std::free() was a
-    // mismatched deallocation on top of the double free.
+    // The struct is allocated with `new` in cuda8_buft_alloc_buffer to match
+    // that delete - releasing it with std::free() was a mismatched
+    // deallocation on top of the double free.
     //
     // This hook owns the device allocation and our own context, nothing else.
 }
@@ -246,15 +247,31 @@ static ggml_backend_buffer_t cuda8_buft_alloc_buffer(
 
     ctx->cuda8_buf = raw;
 
-    // G39: let ggml allocate and own the buffer struct.
+    // G39/G45: allocate the buffer struct with `new`, exactly as
+    // ggml_backend_buffer_init() does, because ggml_backend_buffer_free()
+    // ends with `delete buffer`.
     //
-    // Previously this malloc'd the struct by hand. ggml_backend_buffer_free()
-    // deletes it, so a hand-rolled malloc was a mismatched deallocation, and
-    // cuda8_free_buffer() freeing it too made it a double free. Going through
-    // ggml_backend_buffer_init() keeps ownership in one place and picks up any
-    // future fields added to the struct.
-    ggml_backend_buffer_t buffer =
-        ggml_backend_buffer_init(buft, cuda8_buffer_i, ctx, size);
+    // Three constraints meet here:
+    //   1. ggml deletes this struct, so it must come from new, not malloc.
+    //   2. cuda8_free_buffer() must therefore NOT free it (that was the
+    //      double free fixed in G39).
+    //   3. We cannot simply call ggml_backend_buffer_init(): it lives in
+    //      ../ggml-backend.cpp, which the standalone CUDA 8 container build
+    //      does not compile. Pulling that file in would cascade into
+    //      ggml-alloc.c and ggml's own ggml-backend-reg.cpp, which is not
+    //      C++11-friendly. So the construction is mirrored here instead.
+    //
+    // Field order matches struct ggml_backend_buffer in ggml-backend-impl.h.
+    // If upstream adds a field, this aggregate initialiser value-initialises
+    // it rather than leaving it indeterminate - but it is worth re-checking
+    // against ggml_backend_buffer_init() when syncing upstream.
+    ggml_backend_buffer_t buffer = new (std::nothrow) ggml_backend_buffer {
+        /* .iface   = */ cuda8_buffer_i,
+        /* .buft    = */ buft,
+        /* .context = */ ctx,
+        /* .size    = */ size,
+        /* .usage   = */ GGML_BACKEND_BUFFER_USAGE_ANY,
+    };
 
     if (buffer == NULL) {
         ggml_cuda8_backend_buffer_free(raw);
@@ -263,9 +280,10 @@ static ggml_backend_buffer_t cuda8_buft_alloc_buffer(
     }
 
     if (!ggml_cuda8_ggml_register_buffer(buffer)) {
-        // Full teardown: our hook releases the device memory and ctx, then
-        // ggml deletes the struct.
-        ggml_backend_buffer_free(buffer);
+        // Mirror what ggml_backend_buffer_free() would do: our hook releases
+        // the device allocation and ctx, then the struct itself is deleted.
+        cuda8_free_buffer(buffer);
+        delete buffer;
         return NULL;
     }
 

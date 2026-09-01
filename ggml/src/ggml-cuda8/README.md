@@ -1772,11 +1772,19 @@ the struct was released twice - and with mismatched allocators, since ggml alloc
 it with `new` in `ggml_backend_buffer_init()` while `cuda8_buft_alloc_buffer()` was
 hand-rolling a `std::malloc`.
 
-Fixed by allocating through `ggml_backend_buffer_init()` and leaving the struct's
+Fixed by allocating the struct with `new` - matching ggml's `delete` - and leaving its
 lifetime entirely to ggml. The hook now owns only the device allocation and our own
 context. This would have corrupted the heap on every buffer free; nothing caught it
 earlier because the smoke tests allocate and free through the same paths without a
 full model teardown.
+
+The first attempt called `ggml_backend_buffer_init()` instead, which is the tidier
+form and picks up any fields upstream adds. It does not link in the container: that
+function lives in `../ggml-backend.cpp`, which the standalone build does not compile,
+and pulling it in would cascade into `ggml-alloc.c` and ggml's own
+`ggml-backend-reg.cpp`. So `cuda8_buft_alloc_buffer()` mirrors the construction by
+hand instead - worth re-checking against `ggml_backend_buffer_init()` on each upstream
+sync, since a newly added field would be value-initialised here rather than set.
 
 (`backend->device` was checked at the same time and is fine - `init_backend` in
 `ggml-cuda8-backend-reg.cpp` sets it, as it must, since `ggml_backend_supports_buft`
