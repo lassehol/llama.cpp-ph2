@@ -204,12 +204,12 @@ accordingly:
 |---|---|---|
 | ~~**G38**~~ | ~~Grid clamps on the remaining launches; oversized-tensor smoke; `-Xptxas -v`~~ | **DONE — PASS on GTX 560, 21/21.** §3.2. Register baseline (§3.3) wired but not yet measured. |
 | **G39** | Load a real GGUF through `llama-server` (or `rpc-server`) with `GGML_CUDA8_HOST`; log the CPU/GPU split count and per-op fallback reasons | **Measure before optimizing.** With K-quants working, a Q4_K model is now a realistic first load. The split log turns the rest of this list from guesswork into data. |
-| **G40** | `GLU` / `SWIGLU` (+ `UNARY` SILU) | Recovers the FFN — the largest single block of FLOPs, and now the biggest hole. |
+| ~~**G40**~~ | ~~`GLU` / `SWIGLU`~~ | **Code done, pending hardware regression.** 3080 in the G39 log. Both the split and halves forms; row strides honoured rather than assuming contiguity. |
 | **G41** | `SOFT_MAX_EXT` proper: mask tensor + scale + `max_bias` | Reverts G37's restriction. Real attention softmax currently runs on CPU. |
 | **G42** | Wire the existing F32×F32 matvec (`mmv.cu:210`) into dispatch + `supports_op` | Kernel already written and benched — near-free win for the attention matmuls. |
 | **G43** | `SET_ROWS` + F32 KV cache path | Keeps the KV cache on-device. |
 | **G44** | `SCALE`; broadcast `ADD` | Cheap leaf-node splits. |
-| ~~**G45**~~ | ~~ROPE NEOX~~ | **Code done, pending hardware regression.** Top of the G39 log at 4312. freq_factors and attn_factor now explicitly refused rather than silently dropped. |
+| ~~**G45**~~ | ~~ROPE NEOX~~ | **DONE — PASS on GTX 560, 21/21.** Top of the G39 log at 4312. freq_factors and attn_factor now explicitly refused rather than silently dropped. |
 | **G46** | Permuted / non-contiguous src1 for MUL_MAT | The attention matmuls use permuted views. |
 | **G47** | Q8_0 batched MUL_MAT, or drop Q8_0 to CPU | Only worth doing if a Q8_0 model is actually wanted; Q4_K is the better fit for 1 GB. |
 | **G49** | F16 *storage* support (convert on load, compute in F32) | Removes the `--cache-type f32` workaround and handles F16 `token_embd`/`output`. **Unblocked** — conversion verified on sm_21, §7. |

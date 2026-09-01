@@ -71,6 +71,7 @@ const char * ggml_cuda8_op_name(int op_id) {
         case GGML_CUDA8_OP_MUL_MAT_Q6_K_F32: return "MUL_MAT_Q6_KxF32";
         case GGML_CUDA8_OP_GET_ROWS_Q4_K:    return "GET_ROWS_Q4_K";
         case GGML_CUDA8_OP_GET_ROWS_Q6_K:    return "GET_ROWS_Q6_K";
+        case GGML_CUDA8_OP_SWIGLU_F32:       return "SWIGLU_F32";
         default:                                  return "UNKNOWN";
     }
 }
@@ -246,6 +247,87 @@ static int ggml_cuda8_exec_mul_f32(
 
 
 // -- G28A: ROPE_F32 helpers ---------------------------------------------------
+// -- G40: SWIGLU -------------------------------------------------------------
+
+extern "C" int ggml_cuda8_op_swiglu_f32(
+        const float * src0, const float * src1, float * dst,
+        int nc, int nrows,
+        int src0_stride, int src1_stride, int dst_stride,
+        int swapped);
+
+// Row stride in floats. ggml guarantees ggml_is_contiguous_1 here (rows
+// contiguous, row spacing arbitrary), so nb[1] is the stride that matters.
+static int cuda8_row_stride_f32(const struct ggml_tensor * t) {
+    return (int) (t->nb[1] / sizeof(float));
+}
+
+static int ggml_cuda8_supported_swiglu_f32(
+        const struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * src1,
+        const struct ggml_tensor * dst) {
+    (void) ctx;
+
+    if (src0 == NULL || dst == NULL) return 0;
+    if (src0->type != GGML_TYPE_F32) return 0;
+    if (dst->type  != GGML_TYPE_F32) return 0;
+
+    if (!ggml_is_contiguous_1(src0)) return 0;
+    if (!ggml_is_contiguous_1(dst))  return 0;
+
+    if (src1 != NULL) {
+        if (src1->type != GGML_TYPE_F32) return 0;
+        if (!ggml_is_contiguous_1(src1)) return 0;
+        if (!ggml_are_same_shape(src0, src1)) return 0;
+    }
+
+    // Output width: full row for the split form, half for the halves form.
+    const int64_t nc = src1 ? src0->ne[0] : src0->ne[0] / 2;
+    if (nc <= 0) return 0;
+    if (dst->ne[0] != nc) return 0;
+    if (ggml_nrows(dst) != ggml_nrows(src0)) return 0;
+    if (!src1 && (src0->ne[0] % 2) != 0) return 0;
+
+    return 1;
+}
+
+static int ggml_cuda8_exec_swiglu_f32(
+        struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * src1,
+        struct ggml_tensor * dst) {
+    (void) ctx;
+
+    // op_params[0] = ggml_glu_op, op_params[1] = swapped (ggml_glu_impl).
+    // Read directly rather than via ggml_get_op_params_i32, which lives in
+    // ggml-impl.h and is not included here.
+    int32_t glu_params[2];
+    std::memcpy(glu_params, dst->op_params, sizeof(glu_params));
+    const int32_t glu_op  = glu_params[0];
+    const int32_t swapped = glu_params[1];
+
+    // Only plain SWIGLU. SWIGLU_OAI carries alpha/limit in op_params[2..3]
+    // which this kernel does not apply; the other GLU ops use different
+    // activations entirely.
+    if (glu_op != GGML_GLU_OP_SWIGLU) {
+        std::fprintf(stderr, "ggml-cuda8/swiglu: unsupported glu op %d\n", (int) glu_op);
+        return -1;
+    }
+
+    const int nc    = (int) (src1 ? src0->ne[0] : src0->ne[0] / 2);
+    const int nrows = (int) ggml_nrows(src0);
+
+    return ggml_cuda8_op_swiglu_f32(
+        (const float *) src0->data,
+        src1 ? (const float *) src1->data : NULL,
+        (float *) dst->data,
+        nc, nrows,
+        cuda8_row_stride_f32(src0),
+        src1 ? cuda8_row_stride_f32(src1) : 0,
+        cuda8_row_stride_f32(dst),
+        (int) swapped);
+}
+
 // G45: gained an int mode parameter (0 = NORMAL, 2 = NEOX).
 extern "C" int ggml_cuda8_op_rope_f32(
         const float * x, float * dst, const int * pos,
@@ -483,6 +565,9 @@ int ggml_cuda8_dispatch_supported(
         case GGML_CUDA8_OP_GET_ROWS_Q6_K:
             return supported_get_rows_q6k(ctx, src0, src1, dst);
 
+        case GGML_CUDA8_OP_SWIGLU_F32:
+            return ggml_cuda8_supported_swiglu_f32(ctx, src0, src1, dst);
+
         default:
             return 0;
     }
@@ -568,6 +653,8 @@ int ggml_cuda8_dispatch_execute(
         case GGML_CUDA8_OP_GET_ROWS_Q6_K:
             return exec_get_rows_q6k(ctx, src0, src1, dst);
 
+        case GGML_CUDA8_OP_SWIGLU_F32:
+            return ggml_cuda8_exec_swiglu_f32(ctx, src0, src1, dst);
 
         default:
             return -1;

@@ -1794,7 +1794,7 @@ dereferences it.)
 <!-- G45_STATUS_START -->
 ## G45 status: ROPE NeoX (mode 2)
 
-Status: **implemented, NOT yet verified on hardware.**
+Status: **PASS on GTX 560 / CUDA 8 / Fermi** (21/21 regression).
 
 Top of the G39 rejection log by an order of magnitude - 4312 refusals, every ROPE
 node in every layer, because Qwen3 uses NeoX-style rope and `supports_op` accepted
@@ -1828,6 +1828,21 @@ ggml's own `ggml_rope_cache_init` + `rotate_pairs`, across four configurations:
 The smoke also asserts NEOX output *differs* from NORMAL on the same input - if the
 kernel ignored `mode`, both would match a reference that also ignored it.
 
+On hardware:
+
+    head_dim=64  n_heads=4  seq_len=8  n_dims=64  freq_base=10000  freq_scale=1.0
+      NORMAL (mode 0)  max_err=5.960464e-07  PASS
+      NEOX   (mode 2)  max_err=4.917383e-07  PASS
+      NEOX differs from NORMAL: yes (PASS)
+      MROPE (mode 8) rejected: yes (PASS)
+
+    ROPE (mode=0 NORMAL)   true    ROPE (mode=8 MROPE)    false
+    ROPE (mode=2 NEOX)     true    ROPE (mode=24 VISION)  false
+                                   ROPE (YaRN ext=1)      false
+                                   ROPE (attn_factor!=1)  false
+                                   ROPE (freq_factors)    false
+                                   ROPE (zero params)     false
+
 ### Two silently-ignored parameters, now refused
 
 `supports_op` checked only `mode` and `ext_factor`. Two others were being dropped on
@@ -1857,6 +1872,65 @@ New/changed smoke cases:
 
 `ROPE (mode=2/mrope) -> false` was removed - it asserted the old restriction.
 <!-- G45_STATUS_END -->
+
+<!-- G40_STATUS_START -->
+## G40 status: SwiGLU (the FFN)
+
+Status: **implemented, NOT yet verified on hardware.**
+
+Second in the G39 rejection log at 3080, and the largest block of FLOPs in the model -
+`GGML_OP_GLU` is the whole feed-forward network.
+
+    dst[i] = silu(gate[i]) * up[i],   silu(x) = x / (1 + exp(-x))
+
+Mirrors `ggml_compute_forward_swiglu_f32` + the scalar tail of
+`ggml_vec_swiglu_f32` (`ggml-cpu/ops.cpp`, `vec.cpp`).
+
+### Two shapes, both implemented
+
+`GGML_OP_GLU` carries its operands in one of two ways, and which one appears depends
+on how the model was built:
+
+    split   src1 != NULL   ggml_swiglu_split(a, b) - gate = src0, up = src1,
+                           nc = src0->ne[0], dst same shape as src0
+    halves  src1 == NULL   ggml_swiglu(a) - gate and up are the two halves of each
+                           src0 row, nc = src0->ne[0]/2, op_params[1] (`swapped`)
+                           selects which half is which
+
+Qwen3 reaches `build_ffn(..., LLM_FFN_SILU, LLM_FFN_PAR, il)`, which calls
+`ggml_swiglu_split()` - so the **split** form is the one that matters here. The halves
+form is implemented anyway; it is a few lines and other architectures use it.
+
+### Row strides, not contiguity
+
+ggml only guarantees `ggml_is_contiguous_1` for this op - each row is contiguous, but
+rows may be padded. The kernel therefore takes explicit row strides (in floats,
+derived from `nb[1]`) rather than assuming a packed tensor. Assuming full contiguity
+would have been a latent correctness bug on padded tensors, so the smoke includes a
+deliberately padded case.
+
+### Verification
+
+Same approach as G45: the kernel and the smoke's reference share logic, so they were
+both checked against an independent transcription of ggml's own implementation.
+Five configurations, all exact (0.0e+00 - the arithmetic is identical, not merely
+close):
+
+    split, packed          halves swapped=0        halves swapped=1
+    split, padded rows     degenerate nc=1
+
+Inputs span [-8, 8] so silu's saturating tails are exercised rather than just x~0.
+
+### Refused
+
+`supports_op` accepts only `GGML_GLU_OP_SWIGLU`. The others are rejected:
+`SWIGLU_OAI` carries alpha/limit in `op_params[2..3]` that this kernel does not apply,
+and `REGLU`/`GEGLU`/`GEGLU_ERF`/`GEGLU_QUICK` use different activations entirely.
+Non-contiguous rows and mismatched gate/up shapes are also refused.
+
+New files: `ggml-cuda8-swiglu.cu`, `ggml-cuda8-swiglu-smoke.cu`.
+New dispatch op: `GGML_CUDA8_OP_SWIGLU_F32` (20 dispatch ops now).
+<!-- G40_STATUS_END -->
 
 
 

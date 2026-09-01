@@ -52,6 +52,13 @@ static void set_rope_params(ggml_tensor * t, int n_dims, int mode,
     std::memcpy(t->op_params, p, sizeof(p));
 }
 
+// G40: stamp GLU op_params the way ggml_glu_impl() does.
+// op_params[0] = ggml_glu_op, op_params[1] = swapped.
+static void set_glu_params(ggml_tensor * t, int glu_op, int swapped) {
+    int32_t p[2] = { (int32_t) glu_op, (int32_t) swapped };
+    std::memcpy(t->op_params, p, sizeof(p));
+}
+
 // Create a minimal fake tensor for supports_op testing
 static ggml_tensor make_fake(ggml_type type, int64_t ne0, int64_t ne1) {
     ggml_tensor t;
@@ -247,6 +254,23 @@ int main() {
     op_t.src[1] = &i32_4;
     ok &= test_op(dev, "GET_ROWS", &op_t, true);
 
+    // G40: SWIGLU split form - gate and up as separate tensors. This is what
+    // build_ffn emits for LLM_FFN_PAR, i.e. the Qwen3 case. dst matches src0.
+    ggml_tensor f32_128x8 = make_fake(GGML_TYPE_F32, 128, 8);
+    op_t = make_fake(GGML_TYPE_F32, 128, 8);
+    op_t.op = GGML_OP_GLU;
+    op_t.src[0] = &f32_128x8;
+    op_t.src[1] = &f32_128x8;
+    set_glu_params(&op_t, GGML_GLU_OP_SWIGLU, 0);
+    ok &= test_op(dev, "GLU/SWIGLU (split)", &op_t, true);
+
+    // G40: SWIGLU halves form - dst is half the width of src0.
+    op_t = make_fake(GGML_TYPE_F32, 64, 8);
+    op_t.op = GGML_OP_GLU;
+    op_t.src[0] = &f32_128x8;
+    set_glu_params(&op_t, GGML_GLU_OP_SWIGLU, 1);
+    ok &= test_op(dev, "GLU/SWIGLU (halves)", &op_t, true);
+
  // -- 4. supports_op: FALSE cases --
     std::printf("\n== supports_op: expected FALSE ==\n");
 
@@ -346,6 +370,22 @@ int main() {
     op_t.op = GGML_OP_SOFT_MAX;
     op_t.src[0] = &f32_64;
     ok &= test_op(dev, "SOFT_MAX (zero params)", &op_t, false);
+
+    // G40: other GLU activations use different maths and must be refused.
+    op_t = make_fake(GGML_TYPE_F32, 128, 8);
+    op_t.op = GGML_OP_GLU;
+    op_t.src[0] = &f32_128x8;
+    op_t.src[1] = &f32_128x8;
+    set_glu_params(&op_t, GGML_GLU_OP_GEGLU, 0);
+    ok &= test_op(dev, "GLU/GEGLU", &op_t, false);
+
+    // SWIGLU_OAI carries alpha/limit in op_params[2..3], not applied here.
+    op_t = make_fake(GGML_TYPE_F32, 128, 8);
+    op_t.op = GGML_OP_GLU;
+    op_t.src[0] = &f32_128x8;
+    op_t.src[1] = &f32_128x8;
+    set_glu_params(&op_t, GGML_GLU_OP_SWIGLU_OAI, 0);
+    ok &= test_op(dev, "GLU/SWIGLU_OAI", &op_t, false);
 
     // CPY
     op_t = make_fake(GGML_TYPE_F32, 128, 1);

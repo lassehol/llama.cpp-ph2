@@ -326,6 +326,36 @@ static bool ggml_backend_cuda8_device_supports_op_impl(const struct ggml_tensor 
             return (op->type == GGML_TYPE_F32 &&
                     op->src[0] && op->src[0]->type == GGML_TYPE_F32);
 
+        // G40: SwiGLU gated activation - the FFN.
+        case GGML_OP_GLU: {
+            if (op->type != GGML_TYPE_F32) return false;
+            if (!op->src[0] || op->src[0]->type != GGML_TYPE_F32) return false;
+
+            // Only plain SWIGLU. SWIGLU_OAI carries alpha/limit in
+            // op_params[2..3] that the kernel does not apply; REGLU/GEGLU/
+            // GEGLU_ERF/GEGLU_QUICK use different activations entirely.
+            if (ggml_get_glu_op(op) != GGML_GLU_OP_SWIGLU) return false;
+
+            // src[1] NULL is legitimate: the halves form, where gate and up
+            // are the two halves of each src0 row.
+            if (op->src[1] != NULL) {
+                if (op->src[1]->type != GGML_TYPE_F32) return false;
+                if (!ggml_are_same_shape(op->src[0], op->src[1])) return false;
+                if (!ggml_is_contiguous_1(op->src[1])) return false;
+            } else {
+                if ((op->src[0]->ne[0] % 2) != 0) return false;
+            }
+
+            // The kernel indexes rows by nb[1], so rows must be contiguous.
+            if (!ggml_is_contiguous_1(op->src[0])) return false;
+            if (!ggml_is_contiguous_1(op))         return false;
+
+            const int64_t nc = op->src[1] ? op->src[0]->ne[0] : op->src[0]->ne[0] / 2;
+            if (op->ne[0] != nc) return false;
+
+            return true;
+        }
+
         // embedding lookup (F32, Q4_K, Q6_K)
         case GGML_OP_GET_ROWS:
             return (op->type == GGML_TYPE_F32 &&
