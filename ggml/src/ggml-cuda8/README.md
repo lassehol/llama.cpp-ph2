@@ -1629,20 +1629,51 @@ In the CUDA 8 container:
     ./ggml/src/ggml-cuda8/run-regression.sh          # builds the archive
     ./ggml/src/ggml-cuda8/stage-host-artifacts.sh
 
-On the Ubuntu 22.04 host:
+On the Ubuntu 22.04 host, **from the repo root** - the two sides mount the same
+volume at different paths (`/workspace/notebooks/llama.cpp-ph2` in the container,
+`/mnt/shared/caffe/examples/llama.cpp-ph2` on the host), so use `$PWD` rather than
+copying an absolute path across:
 
     cmake -S . -B build-host \
           -DGGML_CUDA=OFF \
           -DGGML_CUDA8_HOST=ON \
-          -DGGML_CUDA8_LIB_DIR=<repo>/build-cuda8-kernels
+          -DGGML_CUDA8_LIB_DIR="$PWD/build-cuda8-kernels"
     cmake --build build-host -j$(nproc) --target llama-cli llama-server
 
     GGML_CUDA8_DEBUG_OPS=1 GGML_SCHED_DEBUG=2 \
-      ./build-host/bin/llama-cli -m <model>.Q4_K_M.gguf -ngl 99 -p "hello" -n 8 \
+      ./build-host/bin/llama-cli -m ./models/Qwen3-0.6B-Q4_K_M.gguf \
+      -ngl 99 -p "hello" -n 8 --cache-type-k f32 --cache-type-v f32 \
       2> split.log
 
 `llama-cli` is the simplest instrument for a first run; `llama-server` is the actual
 target and uses the same backend path.
+
+`--cache-type-k/v f32` is required until G49: the KV cache defaults to F16 and Fermi
+has no F16 arithmetic. It costs 2x KV memory, which at 0.6B and a short prompt is
+nothing.
+
+### What to expect from Qwen3 specifically
+
+Qwen3 0.6B fits the 1 GB budget better than anything else available (~0.4 GB), but
+it is the *architecture* least suited to the current op set, so do not read the split
+log as a verdict on the port:
+
+- **ROPE will be refused on every layer.** Qwen3 uses NeoX-style rope (`mode=2`);
+  `supports_op` accepts only `mode=0`. That is G45, and it will dominate the log.
+- **SWIGLU will be refused on every layer** - the FFN, and the largest block of
+  FLOPs. That is G40.
+- **SOFT_MAX will be refused on every attention op** - `soft_max_ext` with mask and
+  scale, correctly declined by the G37 guard. That is G41.
+- Qwen3 also applies RMS norm per head to Q and K, so expect more `RMS_NORM` nodes
+  than a LLaMA-architecture model of the same size. Those are supported.
+
+Running a LLaMA-architecture model as well (TinyLlama 1.1B or Llama 3.2 1B at Q4_K_M)
+is worth it for contrast: those use `mode=0` rope, so ROPE stays on the GPU and the
+log isolates the FFN and attention gaps instead. Both are close to the 1 GB ceiling
+though, so partial offload may be needed.
+
+The frequency ordering is per-architecture. If Qwen3 is the target, G45 moves up the
+list; if it is a LLaMA-class model, G40 and G41 come first.
 
 ### Expected obstacle: the CUDA 8 GCC check
 

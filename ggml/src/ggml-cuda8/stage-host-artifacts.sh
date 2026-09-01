@@ -86,21 +86,32 @@ fi
 
 # -- next steps ---------------------------------------------------------------
 
+BUILD_SUBDIR="${BUILD_DIR#${REPO_ROOT}/}"
+
 cat <<EOF
 
-Staged. On the Ubuntu 22.04 host:
+Staged into ${BUILD_DIR}
+  (that is this container's path - the host mounts the same volume elsewhere,
+   e.g. /mnt/shared/caffe/examples/llama.cpp-ph2, so use \$PWD below rather than
+   copying the path above)
+
+On the Ubuntu 22.04 host, from the repo root:
 
   cmake -S . -B build-host \\
         -DGGML_CUDA=OFF \\
         -DGGML_CUDA8_HOST=ON \\
-        -DGGML_CUDA8_LIB_DIR=${BUILD_DIR}
+        -DGGML_CUDA8_LIB_DIR="\$PWD/${BUILD_SUBDIR}"
   cmake --build build-host -j\$(nproc) --target llama-cli llama-server
 
 Then, to see the CPU/GPU split:
 
   GGML_CUDA8_DEBUG_OPS=1 GGML_SCHED_DEBUG=2 \\
-    ./build-host/bin/llama-cli -m <model>.Q4_K_M.gguf -ngl 99 -p "hello" -n 8 \\
+    ./build-host/bin/llama-cli -m ./models/Qwen3-0.6B-Q4_K_M.gguf \\
+    -ngl 99 -p "hello" -n 8 --cache-type-k f32 --cache-type-v f32 \\
     2> split.log
+
+  --cache-type-k/v f32 is needed until G49: the KV cache defaults to F16 and
+  Fermi has no F16 arithmetic.
 
   GGML_SCHED_DEBUG=2   - where each node ran, and the split boundaries
   GGML_CUDA8_DEBUG_OPS - which ops CUDA8 refused, summarised by frequency at exit
