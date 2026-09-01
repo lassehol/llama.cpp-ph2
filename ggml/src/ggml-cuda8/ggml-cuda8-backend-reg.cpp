@@ -294,14 +294,6 @@ static bool ggml_backend_cuda8_device_supports_op_impl(const struct ggml_tensor 
             return (op->type == GGML_TYPE_F32 &&
                     op->src[0] && op->src[0]->type == GGML_TYPE_F32);
 
-        // quantized x F32 matrix multiply (Q8_0, Q4_K, Q6_K)
-        case GGML_OP_MUL_MAT:
-            return (op->type == GGML_TYPE_F32 &&
-                    op->src[0] &&
-                    (op->src[0]->type == GGML_TYPE_Q8_0 ||
-                     op->src[0]->type == GGML_TYPE_Q4_K ||
-                     op->src[0]->type == GGML_TYPE_Q6_K) &&
-                    op->src[1] && op->src[1]->type == GGML_TYPE_F32);
 
         // RMS normalization
         case GGML_OP_RMS_NORM:
