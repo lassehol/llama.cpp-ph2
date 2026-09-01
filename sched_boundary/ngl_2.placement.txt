@@ -1,0 +1,205 @@
+1:ggml-cuda8: unsupported -> CPU: MUL_MAT dst=f32 src0=f32 src1=f32
+2:ggml-cuda8: unsupported -> CPU: SOFT_MAX dst=f32 src0=f32 src1=f32 [soft_max_ext: mask/sinks/scale/max_bias]
+3:ggml-cuda8/backend: graph_optimize stub PASS
+4:ggml-cuda8/backend: graph_optimize stub PASS
+5:ggml-cuda8/backend: graph_optimize stub PASS
+6:ggml-cuda8/backend: graph_optimize stub PASS
+7:ggml-cuda8/backend: graph_optimize stub PASS
+8:ggml-cuda8/backend: graph_optimize stub PASS
+9:ggml-cuda8/backend: graph_optimize stub PASS
+10:ggml-cuda8/backend: graph_optimize stub PASS
+11:ggml-cuda8/backend: graph_optimize stub PASS
+12:ggml-cuda8/backend: graph_optimize stub PASS
+13:ggml-cuda8/backend: graph_optimize stub PASS
+14:ggml-cuda8/backend: graph_optimize stub PASS
+15:ggml-cuda8/backend: synchronize PASS
+16:ggml-cuda8/backend: graph_optimize stub PASS
+17:ggml-cuda8/backend: graph_optimize stub PASS
+18:ggml-cuda8/backend: graph_optimize stub PASS
+19:ggml-cuda8/backend: graph_optimize stub PASS
+20:ggml-cuda8/backend: graph_optimize stub PASS
+21:ggml-cuda8/backend: graph_optimize stub PASS
+22:ggml-cuda8/backend: synchronize PASS
+23:ggml-cuda8/backend: graph_optimize stub PASS
+24:ggml-cuda8/backend: graph_optimize stub PASS
+25:ggml-cuda8/backend: graph_optimize stub PASS
+26:ggml-cuda8/backend: graph_optimize stub PASS
+27:ggml-cuda8/backend: graph_optimize stub PASS
+28:ggml-cuda8/backend: graph_optimize stub PASS
+29:ggml-cuda8/backend: graph_optimize stub PASS
+30:ggml-cuda8/backend: graph_optimize stub PASS
+31:ggml-cuda8/backend: graph_optimize stub PASS
+32:ggml-cuda8/backend: graph_optimize stub PASS
+33:ggml-cuda8/backend: graph_optimize stub PASS
+34:ggml-cuda8/backend: graph_optimize stub PASS
+35:ggml-cuda8/backend: synchronize PASS
+36:ggml-cuda8/backend: graph_optimize stub PASS
+37:ggml-cuda8/backend: graph_optimize stub PASS
+38:ggml-cuda8/backend: graph_optimize stub PASS
+39:ggml-cuda8/backend: graph_optimize stub PASS
+40:ggml-cuda8/backend: graph_optimize stub PASS
+41:ggml-cuda8/backend: graph_optimize stub PASS
+42:ggml-cuda8/backend: synchronize PASS
+43:ggml-cuda8/backend: graph_optimize stub PASS
+44:ggml-cuda8/backend: graph_optimize stub PASS
+45:ggml-cuda8/backend: graph_optimize stub PASS
+46:ggml-cuda8/backend: graph_optimize stub PASS
+47:ggml-cuda8/backend: graph_optimize stub PASS
+48:ggml-cuda8/backend: graph_optimize stub PASS
+49:ggml-cuda8/backend: graph_optimize stub PASS
+50:ggml-cuda8/backend: graph_optimize stub PASS
+51:ggml-cuda8/backend: graph_optimize stub PASS
+52:ggml-cuda8/backend: graph_optimize stub PASS
+53:ggml-cuda8/backend: graph_optimize stub PASS
+54:ggml-cuda8/backend: graph_optimize stub PASS
+55:ggml-cuda8/backend: synchronize PASS
+56:ggml-cuda8/backend: graph_optimize stub PASS
+57:ggml-cuda8/backend: graph_optimize stub PASS
+58:ggml-cuda8/backend: synchronize PASS
+59:ggml-cuda8/backend: graph_optimize stub PASS
+60:ggml-cuda8/backend: graph_optimize stub PASS
+61:ggml-cuda8/backend: synchronize PASS
+62:ggml-cuda8/backend: graph_optimize stub PASS
+63:ggml-cuda8/backend: graph_optimize stub PASS
+64:ggml-cuda8/backend: graph_optimize stub PASS
+65:ggml-cuda8/backend: graph_optimize stub PASS
+66:ggml-cuda8/backend: synchronize PASS
+67:ggml-cuda8/backend: synchronize PASS
+68:ggml-cuda8/backend: synchronize PASS
+69:ggml-cuda8/backend: synchronize PASS
+70:ggml-cuda8/backend: synchronize PASS
+71:ggml-cuda8/backend: graph_compute starting n_nodes=16
+72:ggml-cuda8/backend: graph_compute node 0 ADD_F32
+73:ggml-cuda8/backend: graph_compute node 1 RMS_NORM_F32
+74:ggml-cuda8/backend: graph_compute node 2 MUL_BROADCAST_F32
+75:ggml-cuda8/backend: graph_compute node 3 MUL_MAT_Q4_KxF32
+76:ggml-cuda8/backend: graph_compute node 5 RMS_NORM_F32
+77:ggml-cuda8/backend: graph_compute node 6 MUL_BROADCAST_F32
+78:ggml-cuda8/backend: graph_compute node 7 ROPE_F32
+79:ggml-cuda8/backend: graph_compute node 8 MUL_MAT_Q6_KxF32
+80:ggml-cuda8/backend: graph_compute node 10 MUL_MAT_Q4_KxF32
+81:ggml-cuda8/backend: graph_compute node 12 RMS_NORM_F32
+82:ggml-cuda8/backend: graph_compute node 13 MUL_BROADCAST_F32
+83:ggml-cuda8/backend: graph_compute node 14 ROPE_F32
+84:ggml-cuda8/backend: graph_compute SUCCESS
+85:ggml-cuda8/backend: synchronize PASS
+86:ggml-cuda8/backend: synchronize PASS
+87:ggml-cuda8/backend: synchronize PASS
+88:ggml-cuda8/backend: synchronize PASS
+89:ggml-cuda8/backend: synchronize PASS
+90:ggml-cuda8/backend: synchronize PASS
+91:ggml-cuda8/backend: graph_compute starting n_nodes=14
+92:ggml-cuda8/backend: graph_compute node 0 MUL_MAT_Q4_KxF32
+93:ggml-cuda8/backend: graph_compute node 1 GET_ROWS_F32
+94:ggml-cuda8/backend: graph_compute node 2 GET_ROWS_F32
+95:ggml-cuda8/backend: graph_compute node 3 ADD_F32
+96:ggml-cuda8/backend: graph_compute node 4 RMS_NORM_F32
+97:ggml-cuda8/backend: graph_compute node 5 MUL_F32
+98:ggml-cuda8/backend: graph_compute node 6 MUL_MAT_Q4_KxF32
+99:ggml-cuda8/backend: graph_compute node 7 MUL_MAT_Q4_KxF32
+100:ggml-cuda8/backend: graph_compute node 8 SWIGLU_F32
+101:ggml-cuda8/backend: graph_compute node 9 MUL_MAT_Q6_KxF32
+102:ggml-cuda8/backend: graph_compute node 10 ADD_F32
+103:ggml-cuda8/backend: graph_compute node 11 RMS_NORM_F32
+104:ggml-cuda8/backend: graph_compute node 12 MUL_F32
+105:ggml-cuda8/backend: graph_compute node 13 MUL_MAT_Q6_KxF32
+106:ggml-cuda8/backend: graph_compute SUCCESS
+107:ggml-cuda8/backend: synchronize PASS
+108:ggml-cuda8/backend: synchronize PASS
+109:ggml-cuda8/backend: synchronize PASS
+110:ggml-cuda8/backend: synchronize PASS
+111:ggml-cuda8/backend: synchronize PASS
+112:ggml-cuda8/backend: synchronize PASS
+113:ggml-cuda8/backend: synchronize PASS
+114:ggml-cuda8/backend: graph_compute starting n_nodes=16
+115:ggml-cuda8/backend: graph_compute node 0 ADD_F32
+116:ggml-cuda8/backend: graph_compute node 1 RMS_NORM_F32
+117:ggml-cuda8/backend: graph_compute node 2 MUL_BROADCAST_F32
+118:ggml-cuda8/backend: graph_compute node 3 MUL_MAT_Q4_KxF32
+119:ggml-cuda8/backend: graph_compute node 5 RMS_NORM_F32
+120:ggml-cuda8/backend: graph_compute node 6 MUL_BROADCAST_F32
+121:ggml-cuda8/backend: graph_compute node 7 ROPE_F32
+122:ggml-cuda8/backend: graph_compute node 8 MUL_MAT_Q6_KxF32
+123:ggml-cuda8/backend: graph_compute node 10 MUL_MAT_Q4_KxF32
+124:ggml-cuda8/backend: graph_compute node 12 RMS_NORM_F32
+125:ggml-cuda8/backend: graph_compute node 13 MUL_BROADCAST_F32
+126:ggml-cuda8/backend: graph_compute node 14 ROPE_F32
+127:ggml-cuda8/backend: graph_compute SUCCESS
+128:ggml-cuda8/backend: synchronize PASS
+129:ggml-cuda8/backend: synchronize PASS
+130:ggml-cuda8/backend: synchronize PASS
+131:ggml-cuda8/backend: synchronize PASS
+132:ggml-cuda8/backend: synchronize PASS
+133:ggml-cuda8/backend: synchronize PASS
+134:ggml-cuda8/backend: graph_compute starting n_nodes=14
+135:ggml-cuda8/backend: graph_compute node 0 MUL_MAT_Q4_KxF32
+136:ggml-cuda8/backend: graph_compute node 1 GET_ROWS_F32
+137:ggml-cuda8/backend: graph_compute node 2 GET_ROWS_F32
+138:ggml-cuda8/backend: graph_compute node 3 ADD_F32
+139:ggml-cuda8/backend: graph_compute node 4 RMS_NORM_F32
+140:ggml-cuda8/backend: graph_compute node 5 MUL_F32
+141:ggml-cuda8/backend: graph_compute node 6 MUL_MAT_Q4_KxF32
+142:ggml-cuda8/backend: graph_compute node 7 MUL_MAT_Q4_KxF32
+143:ggml-cuda8/backend: graph_compute node 8 SWIGLU_F32
+144:ggml-cuda8/backend: graph_compute node 9 MUL_MAT_Q6_KxF32
+145:ggml-cuda8/backend: graph_compute node 10 ADD_F32
+146:ggml-cuda8/backend: graph_compute node 11 RMS_NORM_F32
+147:ggml-cuda8/backend: graph_compute node 12 MUL_F32
+148:ggml-cuda8/backend: graph_compute node 13 MUL_MAT_Q6_KxF32
+149:ggml-cuda8/backend: graph_compute SUCCESS
+150:ggml-cuda8/backend: synchronize PASS
+151:ggml-cuda8/backend: synchronize PASS
+152:ggml-cuda8/backend: graph_optimize stub PASS
+153:ggml-cuda8/backend: graph_optimize stub PASS
+154:ggml-cuda8/backend: synchronize PASS
+155:ggml-cuda8/backend: synchronize PASS
+156:ggml-cuda8/backend: synchronize PASS
+157:ggml-cuda8/backend: synchronize PASS
+158:ggml-cuda8/backend: synchronize PASS
+159:ggml-cuda8/backend: graph_compute starting n_nodes=16
+160:ggml-cuda8/backend: graph_compute node 0 ADD_F32
+161:ggml-cuda8/backend: graph_compute node 1 RMS_NORM_F32
+162:ggml-cuda8/backend: graph_compute node 2 MUL_BROADCAST_F32
+163:ggml-cuda8/backend: graph_compute node 3 MUL_MAT_Q4_KxF32
+164:ggml-cuda8/backend: graph_compute node 5 RMS_NORM_F32
+165:ggml-cuda8/backend: graph_compute node 6 MUL_BROADCAST_F32
+166:ggml-cuda8/backend: graph_compute node 7 ROPE_F32
+167:ggml-cuda8/backend: graph_compute node 8 MUL_MAT_Q6_KxF32
+168:ggml-cuda8/backend: graph_compute node 10 MUL_MAT_Q4_KxF32
+169:ggml-cuda8/backend: graph_compute node 12 RMS_NORM_F32
+170:ggml-cuda8/backend: graph_compute node 13 MUL_BROADCAST_F32
+171:ggml-cuda8/backend: graph_compute node 14 ROPE_F32
+172:ggml-cuda8/backend: graph_compute SUCCESS
+173:ggml-cuda8/backend: synchronize PASS
+174:ggml-cuda8/backend: synchronize PASS
+175:ggml-cuda8/backend: synchronize PASS
+176:ggml-cuda8/backend: synchronize PASS
+177:ggml-cuda8/backend: synchronize PASS
+178:ggml-cuda8/backend: synchronize PASS
+179:ggml-cuda8/backend: graph_compute starting n_nodes=14
+180:ggml-cuda8/backend: graph_compute node 0 MUL_MAT_Q4_KxF32
+181:ggml-cuda8/backend: graph_compute node 1 GET_ROWS_F32
+182:ggml-cuda8/backend: graph_compute node 2 GET_ROWS_F32
+183:ggml-cuda8/backend: graph_compute node 3 ADD_F32
+184:ggml-cuda8/backend: graph_compute node 4 RMS_NORM_F32
+185:ggml-cuda8/backend: graph_compute node 5 MUL_F32
+186:ggml-cuda8/backend: graph_compute node 6 MUL_MAT_Q4_KxF32
+187:ggml-cuda8/backend: graph_compute node 7 MUL_MAT_Q4_KxF32
+188:ggml-cuda8/backend: graph_compute node 8 SWIGLU_F32
+189:ggml-cuda8/backend: graph_compute node 9 MUL_MAT_Q6_KxF32
+190:ggml-cuda8/backend: graph_compute node 10 ADD_F32
+191:ggml-cuda8/backend: graph_compute node 11 RMS_NORM_F32
+192:ggml-cuda8/backend: graph_compute node 12 MUL_F32
+193:ggml-cuda8/backend: graph_compute node 13 MUL_MAT_Q6_KxF32
+194:ggml-cuda8/backend: graph_compute SUCCESS
+195:ggml-cuda8/backend: synchronize PASS
+196:ggml-cuda8/backend: synchronize PASS
+197:ggml-cuda8/backend: synchronize PASS
+198:ggml-cuda8/backend: synchronize PASS
+199:ggml-cuda8/backend: synchronize PASS
+200:ggml-cuda8/backend: synchronize PASS
+201:ggml-cuda8/backend: synchronize PASS
+202:ggml-cuda8/backend: synchronize PASS
+204:ggml-cuda8: ops refused by supports_op (ran on CPU), by frequency:
+205:         4  MUL_MAT dst=f32 src0=f32 src1=f32
+208:ggml-cuda8/backend: synchronize PASS

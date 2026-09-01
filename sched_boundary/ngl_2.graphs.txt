@@ -1,0 +1,96 @@
+ggml-cuda8/backend: graph_compute starting n_nodes=16
+ggml-cuda8/backend: graph_compute node 0 ADD_F32
+ggml-cuda8/backend: graph_compute node 1 RMS_NORM_F32
+ggml-cuda8/backend: graph_compute node 2 MUL_BROADCAST_F32
+ggml-cuda8/backend: graph_compute node 3 MUL_MAT_Q4_KxF32
+ggml-cuda8/backend: graph_compute node 5 RMS_NORM_F32
+ggml-cuda8/backend: graph_compute node 6 MUL_BROADCAST_F32
+ggml-cuda8/backend: graph_compute node 7 ROPE_F32
+ggml-cuda8/backend: graph_compute node 8 MUL_MAT_Q6_KxF32
+ggml-cuda8/backend: graph_compute node 10 MUL_MAT_Q4_KxF32
+ggml-cuda8/backend: graph_compute node 12 RMS_NORM_F32
+ggml-cuda8/backend: graph_compute node 13 MUL_BROADCAST_F32
+ggml-cuda8/backend: graph_compute node 14 ROPE_F32
+ggml-cuda8/backend: graph_compute SUCCESS
+
+ggml-cuda8/backend: graph_compute starting n_nodes=14
+ggml-cuda8/backend: graph_compute node 0 MUL_MAT_Q4_KxF32
+ggml-cuda8/backend: graph_compute node 1 GET_ROWS_F32
+ggml-cuda8/backend: graph_compute node 2 GET_ROWS_F32
+ggml-cuda8/backend: graph_compute node 3 ADD_F32
+ggml-cuda8/backend: graph_compute node 4 RMS_NORM_F32
+ggml-cuda8/backend: graph_compute node 5 MUL_F32
+ggml-cuda8/backend: graph_compute node 6 MUL_MAT_Q4_KxF32
+ggml-cuda8/backend: graph_compute node 7 MUL_MAT_Q4_KxF32
+ggml-cuda8/backend: graph_compute node 8 SWIGLU_F32
+ggml-cuda8/backend: graph_compute node 9 MUL_MAT_Q6_KxF32
+ggml-cuda8/backend: graph_compute node 10 ADD_F32
+ggml-cuda8/backend: graph_compute node 11 RMS_NORM_F32
+ggml-cuda8/backend: graph_compute node 12 MUL_F32
+ggml-cuda8/backend: graph_compute node 13 MUL_MAT_Q6_KxF32
+ggml-cuda8/backend: graph_compute SUCCESS
+
+ggml-cuda8/backend: graph_compute starting n_nodes=16
+ggml-cuda8/backend: graph_compute node 0 ADD_F32
+ggml-cuda8/backend: graph_compute node 1 RMS_NORM_F32
+ggml-cuda8/backend: graph_compute node 2 MUL_BROADCAST_F32
+ggml-cuda8/backend: graph_compute node 3 MUL_MAT_Q4_KxF32
+ggml-cuda8/backend: graph_compute node 5 RMS_NORM_F32
+ggml-cuda8/backend: graph_compute node 6 MUL_BROADCAST_F32
+ggml-cuda8/backend: graph_compute node 7 ROPE_F32
+ggml-cuda8/backend: graph_compute node 8 MUL_MAT_Q6_KxF32
+ggml-cuda8/backend: graph_compute node 10 MUL_MAT_Q4_KxF32
+ggml-cuda8/backend: graph_compute node 12 RMS_NORM_F32
+ggml-cuda8/backend: graph_compute node 13 MUL_BROADCAST_F32
+ggml-cuda8/backend: graph_compute node 14 ROPE_F32
+ggml-cuda8/backend: graph_compute SUCCESS
+
+ggml-cuda8/backend: graph_compute starting n_nodes=14
+ggml-cuda8/backend: graph_compute node 0 MUL_MAT_Q4_KxF32
+ggml-cuda8/backend: graph_compute node 1 GET_ROWS_F32
+ggml-cuda8/backend: graph_compute node 2 GET_ROWS_F32
+ggml-cuda8/backend: graph_compute node 3 ADD_F32
+ggml-cuda8/backend: graph_compute node 4 RMS_NORM_F32
+ggml-cuda8/backend: graph_compute node 5 MUL_F32
+ggml-cuda8/backend: graph_compute node 6 MUL_MAT_Q4_KxF32
+ggml-cuda8/backend: graph_compute node 7 MUL_MAT_Q4_KxF32
+ggml-cuda8/backend: graph_compute node 8 SWIGLU_F32
+ggml-cuda8/backend: graph_compute node 9 MUL_MAT_Q6_KxF32
+ggml-cuda8/backend: graph_compute node 10 ADD_F32
+ggml-cuda8/backend: graph_compute node 11 RMS_NORM_F32
+ggml-cuda8/backend: graph_compute node 12 MUL_F32
+ggml-cuda8/backend: graph_compute node 13 MUL_MAT_Q6_KxF32
+ggml-cuda8/backend: graph_compute SUCCESS
+
+ggml-cuda8/backend: graph_compute starting n_nodes=16
+ggml-cuda8/backend: graph_compute node 0 ADD_F32
+ggml-cuda8/backend: graph_compute node 1 RMS_NORM_F32
+ggml-cuda8/backend: graph_compute node 2 MUL_BROADCAST_F32
+ggml-cuda8/backend: graph_compute node 3 MUL_MAT_Q4_KxF32
+ggml-cuda8/backend: graph_compute node 5 RMS_NORM_F32
+ggml-cuda8/backend: graph_compute node 6 MUL_BROADCAST_F32
+ggml-cuda8/backend: graph_compute node 7 ROPE_F32
+ggml-cuda8/backend: graph_compute node 8 MUL_MAT_Q6_KxF32
+ggml-cuda8/backend: graph_compute node 10 MUL_MAT_Q4_KxF32
+ggml-cuda8/backend: graph_compute node 12 RMS_NORM_F32
+ggml-cuda8/backend: graph_compute node 13 MUL_BROADCAST_F32
+ggml-cuda8/backend: graph_compute node 14 ROPE_F32
+ggml-cuda8/backend: graph_compute SUCCESS
+
+ggml-cuda8/backend: graph_compute starting n_nodes=14
+ggml-cuda8/backend: graph_compute node 0 MUL_MAT_Q4_KxF32
+ggml-cuda8/backend: graph_compute node 1 GET_ROWS_F32
+ggml-cuda8/backend: graph_compute node 2 GET_ROWS_F32
+ggml-cuda8/backend: graph_compute node 3 ADD_F32
+ggml-cuda8/backend: graph_compute node 4 RMS_NORM_F32
+ggml-cuda8/backend: graph_compute node 5 MUL_F32
+ggml-cuda8/backend: graph_compute node 6 MUL_MAT_Q4_KxF32
+ggml-cuda8/backend: graph_compute node 7 MUL_MAT_Q4_KxF32
+ggml-cuda8/backend: graph_compute node 8 SWIGLU_F32
+ggml-cuda8/backend: graph_compute node 9 MUL_MAT_Q6_KxF32
+ggml-cuda8/backend: graph_compute node 10 ADD_F32
+ggml-cuda8/backend: graph_compute node 11 RMS_NORM_F32
+ggml-cuda8/backend: graph_compute node 12 MUL_F32
+ggml-cuda8/backend: graph_compute node 13 MUL_MAT_Q6_KxF32
+ggml-cuda8/backend: graph_compute SUCCESS
+
