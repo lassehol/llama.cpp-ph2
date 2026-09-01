@@ -22,7 +22,19 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 BUILD_DIR="${BUILD_DIR:-${REPO_ROOT}/build-cuda8-parent}"
 NPROC="${NPROC:-$(nproc 2>/dev/null || echo 4)}"
-BIN_DIR="${BUILD_DIR}/ggml/src/ggml-cuda8"
+
+# The root CMakeLists sets CMAKE_RUNTIME_OUTPUT_DIRECTORY to <build>/bin, so
+# executables do not land in the target's source-mirror directory. Resolve
+# rather than assume - some targets also set RUNTIME_OUTPUT_DIRECTORY directly.
+find_binary() {
+    local t="$1" cand hit
+    for cand in "${BUILD_DIR}/bin/$t" "${BUILD_DIR}/ggml/src/ggml-cuda8/$t"; do
+        if [ -x "$cand" ]; then printf '%s' "$cand"; return 0; fi
+    done
+    hit="$(find "${BUILD_DIR}" -type f -name "$t" -perm -u+x 2>/dev/null | head -1)"
+    if [ -n "$hit" ]; then printf '%s' "$hit"; return 0; fi
+    return 1
+}
 
 # -- target sets --------------------------------------------------------------
 
@@ -91,13 +103,14 @@ fail=0
 failed_targets=()
 
 for t in "${TARGETS[@]}"; do
-    if [ ! -x "${BIN_DIR}/$t" ]; then
-        echo "MISSING  $t   (not at ${BIN_DIR})"
+    bin="$(find_binary "$t")"
+    if [ -z "$bin" ]; then
+        echo "MISSING  $t   (not found anywhere under ${BUILD_DIR})"
         fail=$((fail + 1)); failed_targets+=("$t")
         continue
     fi
 
-    if "${BIN_DIR}/$t" > "/tmp/run-$t.log" 2>&1; then
+    if "$bin" > "/tmp/run-$t.log" 2>&1; then
         printf 'PASS     %s\n' "$t"
         pass=$((pass + 1))
     else
