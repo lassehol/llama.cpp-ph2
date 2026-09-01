@@ -1361,8 +1361,7 @@ Notes:
 <!-- G37_STATUS_START -->
 ## G37 status: SOFT_MAX soft_max_ext guard (silent wrong-answer fix)
 
-Status: **implemented, NOT yet verified on hardware.** Needs a regression run on the
-GTX 560 before this is marked PASS.
+Status: **PASS on GTX 560 / CUDA 8 / Fermi** (11/11 regression).
 
 G37 fixes a correctness bug rather than adding capability. `supports_op` claimed any
 F32 `GGML_OP_SOFT_MAX` while the `SOFTMAX_ROWS_F32` kernel implements only a plain
@@ -1386,7 +1385,36 @@ Validated G37 checkpoints:
   `graph_compute` both gated on it. Predicate verified standalone under `-std=c++11`
   across 7 cases (plain / zeroed params / mask / sinks / scale / max_bias / NULL).
 - **G37B**: smoke fixtures corrected and rejection cases added.
-- **G37C**: *pending* - full regression on GTX 560.
+- **G37C**: full regression on GTX 560, 11/11 pass:
+
+      PASS  ggml-cuda8-ggml-backend-supports-op-smoke                    <- G37 primary
+      PASS  ggml-cuda8-ggml-backend-graph-compute-softmax-smoke          <- fixture fix
+      PASS  ggml-cuda8-ggml-backend-graph-compute-attnlike-smoke         <- fixture fix
+      PASS  ggml-cuda8-softmax-smoke
+      PASS  ggml-cuda8-dispatch-all-smoke
+      PASS  ggml-cuda8-ggml-backend-graph-builder-softmax-smoke
+      PASS  ggml-cuda8-ggml-backend-graph-builder-attnlike-smoke
+      PASS  ggml-cuda8-ggml-backend-graph-builder-q8_0-residual-scale-add-softmax-sumrows-smoke
+      PASS  ggml-cuda8-ggml-backend-graph-builder-transformer-block-smoke
+      PASS  ggml-cuda8-ggml-backend-graph-builder-attention-smoke
+      PASS  ggml-cuda8-ggml-backend-graph-builder-e2e-smoke              <- G35 e2e, unaffected
+
+  The supports-op smoke exits nonzero on any expectation mismatch, so its PASS
+  covers all five new rejection cases plus `SOFT_MAX (plain)` still being accepted.
+
+- **G37D**: incidental fixes surfaced by the rebuild:
+
+  - `ggml-cuda8-ggml-backend.cpp` was missing `#include <cuda_runtime.h>`. It calls
+    the CUDA runtime directly but does not get the header transitively - the
+    `-ggml-backend.h` -> `-dispatch.h` -> `-context.h` -> `-backend.h` chain never
+    includes it. This had been latent behind a stale object file; the G37 header
+    change forced the recompile that exposed it.
+  - `run-regression.sh` added: builds and runs a named target set, resolving
+    binaries under `<build>/bin` (the root `CMakeLists.txt` redirects
+    `CMAKE_RUNTIME_OUTPUT_DIRECTORY` there). Written for the container's cmake
+    3.5.1 - no `-S`/`-B`, no `--build -j`.
+  - `.gitattributes`: `*.sh text eol=lf`, so shell scripts authored on Windows
+    survive the round trip to the Linux container.
 
 Implementation:
 
