@@ -304,8 +304,9 @@ static bool ggml_backend_cuda8_device_supports_op_impl(const struct ggml_tensor 
 
         // RMS normalization
         case GGML_OP_RMS_NORM:
-            return (op->type == GGML_TYPE_F32 &&
-                    op->src[0] && op->src[0]->type == GGML_TYPE_F32);
+            return false; // TEMP BISECT G42-debug
+			//return (op->type == GGML_TYPE_F32 &&
+              //      op->src[0] && op->src[0]->type == GGML_TYPE_F32);
 
         // rotary positional embeddings: NORMAL (0) and NEOX (2)
         case GGML_OP_ROPE: {
