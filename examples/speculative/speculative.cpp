@@ -1,6 +1,7 @@
 #include "arg.h"
 #include "common.h"
 #include "sampling.h"
+#include "speculative.h"
 #include "log.h"
 #include "llama.h"
 
@@ -57,6 +58,11 @@ int main(int argc, char ** argv) {
     // max number of parallel drafting sequences (i.e. tree branches)
     const int n_seq_dft = params.n_parallel;
 
+    const auto output_limits = common_speculative_get_output_limits(
+            params.n_batch, params.n_parallel, params.speculative.draft.n_max);
+    params.n_outputs_max = output_limits.total;
+    params.n_outputs_max_per_seq = output_limits.per_seq;
+
     // probability threshold for splitting a draft branch (only for n_seq_dft > 1)
     const float p_draft_split = params.speculative.draft.p_split;
 
@@ -83,6 +89,8 @@ int main(int argc, char ** argv) {
     params.devices = params.speculative.draft.devices;
     params.model = params.speculative.draft.mparams;
     params.n_gpu_layers = params.speculative.draft.n_gpu_layers;
+    params.n_outputs_max = params.n_parallel;
+    params.n_outputs_max_per_seq = 1;
     if (params.speculative.draft.cpuparams.n_threads > 0) {
         params.cpuparams.n_threads = params.speculative.draft.cpuparams.n_threads;
     }
@@ -110,13 +118,21 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
-    if (
-        llama_vocab_get_add_bos(vocab_tgt) != llama_vocab_get_add_bos(vocab_dft) ||
-        llama_vocab_get_add_eos(vocab_tgt) != llama_vocab_get_add_eos(vocab_dft) ||
-        llama_vocab_bos(vocab_tgt) != llama_vocab_bos(vocab_dft) ||
-        llama_vocab_eos(vocab_tgt) != llama_vocab_eos(vocab_dft)
-    ) {
-        LOG_ERR("%s: draft model special tokens must match target model to use speculation\n", __func__);
+    if (llama_vocab_get_add_bos(vocab_tgt) != llama_vocab_get_add_bos(vocab_dft) ||
+        (llama_vocab_get_add_bos(vocab_tgt) && llama_vocab_bos(vocab_tgt) != llama_vocab_bos(vocab_dft))) {
+        LOG_ERR("%s: draft model bos tokens must match target model to use speculation. add: %d - %d, id: %d - %d)\n",
+                __func__,
+                llama_vocab_get_add_bos(vocab_tgt), llama_vocab_get_add_bos(vocab_dft),
+                llama_vocab_bos(vocab_tgt), llama_vocab_bos(vocab_dft));
+        return 1;
+    }
+
+    if (llama_vocab_get_add_eos(vocab_tgt) != llama_vocab_get_add_eos(vocab_dft) ||
+        (llama_vocab_get_add_eos(vocab_tgt) && llama_vocab_eos(vocab_tgt) != llama_vocab_eos(vocab_dft))) {
+        LOG_ERR("%s: draft model eos tokens must match target model to use speculation. add: %d - %d, id: %d - %d)\n",
+                __func__,
+                llama_vocab_get_add_eos(vocab_tgt), llama_vocab_get_add_eos(vocab_dft),
+                llama_vocab_eos(vocab_tgt), llama_vocab_eos(vocab_dft));
         return 1;
     }
 
@@ -137,11 +153,12 @@ int main(int argc, char ** argv) {
         for (int i = SPEC_VOCAB_CHECK_START_TOKEN_ID; i < std::min(n_vocab_tgt, n_vocab_dft); ++i) {
             const char * token_text_tgt = llama_vocab_get_text(vocab_tgt, i);
             const char * token_text_dft = llama_vocab_get_text(vocab_dft, i);
+
             if (std::strcmp(token_text_tgt, token_text_dft) != 0) {
                 LOG_ERR("%s: draft model vocab must match target model to use speculation but ", __func__);
                 LOG_ERR("token %d content differs - target '%s', draft '%s'\n", i,
-                        common_token_to_piece(ctx_tgt, i).c_str(),
-                        common_token_to_piece(ctx_dft, i).c_str());
+                        common_token_to_piece(vocab_tgt, i).c_str(),
+                        common_token_to_piece(vocab_dft, i).c_str());
                 return 1;
             }
         }

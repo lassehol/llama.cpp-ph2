@@ -2746,8 +2746,8 @@ static const ggml_backend_i ggml_backend_cann_interface = {
     /* .free                    = */ ggml_backend_cann_free,
     /* .set_tensor_async        = */ ggml_backend_cann_set_tensor_async,
     /* .get_tensor_async        = */ ggml_backend_cann_get_tensor_async,
-    /* .get_tensor_2d_async     = */ NULL,
     /* .set_tensor_2d_async     = */ NULL,
+    /* .get_tensor_2d_async     = */ NULL,
     /* .cpy_tensor_async        = */ ggml_backend_cann_cpy_tensor_async,
     /* .synchronize             = */ ggml_backend_cann_synchronize,
     /* .graph_plan_create       = */ NULL,
@@ -2815,6 +2815,7 @@ static void ggml_backend_cann_device_get_props(ggml_backend_dev_t dev, ggml_back
         /* .host_buffer           = */ host_buffer,
         /* .buffer_from_host_ptr  = */ false,
         /* .events                = */ true,
+        /* .mmap_support          = */ true,
     };
 }
 
