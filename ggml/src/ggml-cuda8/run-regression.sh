@@ -96,6 +96,16 @@ if [ ! -f "${BUILD_DIR}/CMakeCache.txt" ]; then
     echo "== configuring ${BUILD_DIR}"
     mkdir -p "${BUILD_DIR}" || exit 1
     ( cd "${BUILD_DIR}" && cmake "${REPO_ROOT}" -DGGML_CUDA8=ON -DGGML_CUDA=OFF ) || exit 1
+else
+    # Always regenerate. make only re-runs cmake as a prerequisite of targets it
+    # already knows about, so a target added since the last configure fails with
+    # "No rule to make target" and never gets the chance. Costs a few seconds.
+    echo "== regenerating ${BUILD_DIR}"
+    ( cd "${BUILD_DIR}" && cmake . > /tmp/cmake-regen.log 2>&1 ) || {
+        echo "cmake regeneration FAILED (see /tmp/cmake-regen.log)"
+        tail -20 /tmp/cmake-regen.log
+        exit 1
+    }
 fi
 
 # -- build --------------------------------------------------------------------
