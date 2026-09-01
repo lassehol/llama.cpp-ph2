@@ -710,3 +710,114 @@ the graph stops splitting). The G38 register-spill baseline (section 3.3)
 remains open and independent.
 
 ---
+G53 UPDATE — records the transposed-dst K-quant MUL_MAT fix and, more
+importantly, the first real-model measurement finding: attention never
+reaches the GPU. Apply IN ADDITION TO backport-cuda8-append.md,
+-append-2.md, -append-3.md. This is the most consequential update since
+G39 because it changes what the next phase should be.
+
+---
+
+EDIT 1 — in the ORIGINAL document, section "### 3. Latent correctness risks
+in the existing kernels", add a new subsection after 3.4 (the G51
+robustness subsection from backport-cuda8-append.md):
+
+    **3.5 Transposed dst write in K-quant MUL_MAT — FIXED in G53, verified
+    on a real model.** Both Q4_K and Q6_K MUL_MAT kernels wrote the output
+    element at `dst[row*ne11 + col]` instead of the ggml layout
+    `dst[col*ne01 + row]`. These are equal only at ne11 == 1 (matvec), which
+    is the only shape every K-quant smoke and graph-builder checkpoint
+    (G17C, G18-G23) ever used - so all of them passed while the kernel was
+    wrong for any ne11 > 1 (prompt prefill). Q8_0 was unaffected (its
+    per-token loop writes the correct layout), which is why SmolLM2-Q8_0
+    worked but Qwen3-Q4_K produced structured-loop garbage. Same failure
+    mode as 3.1/3.4: wrong numbers, graph_compute reports SUCCESS, nothing
+    fails loudly. Fixed (one line each in q4k.cu:142 / q6k.cu:160) plus a
+    new ne11 > 1 regression smoke - the K-quant smokes could not have caught
+    this because they were all ne11 == 1. See ggml-cuda8/README.md G53.
+
+---
+
+EDIT 2 — new top-level section, place at the end of the document, after
+section "### 10. G42" (from backport-cuda8-append-3.md) and before the
+closing italic attribution line:
+
+---
+
+### 11. First real Q4_K model, and the finding that reframes the roadmap
+
+**Milestone.** With G41/G42 landed and the G53 transposed-dst fix,
+Qwen3-0.6B-Q4_K_M generates coherent text end-to-end on the GTX 560 via
+llama-cli -ngl 99. This is the first real Q4_K model on the backend; the
+prior high-water mark was SmolLM2-135M in Q8_0. Correctness is achieved.
+
+**The finding: attention never reaches the GPU.** The GGML_CUDA8_DEBUG_OPS=1
+op histogram from the working run is decisive. GPU-executed ops, by
+frequency:
+
+    5712  MUL_MAT_Q4_K       (weights)
+    3842  RMS_NORM_F32
+    2069  MUL_BROADCAST_F32
+    1904  ROPE_F32
+    1904  ADD_F32
+    1773  MUL_F32
+     986  MUL_MAT_Q6_K       (weights)
+     952  SWIGLU_F32
+      68  GET_ROWS_F32
+
+Conspicuously ABSENT, zero occurrences each: SOFTMAX_EXT_F32 (G41),
+MUL_MAT_F32xF32 (G42), DIAG_MASK_INF_F32. The entire attention inner block
+- scores, causal mask, softmax, context - runs on CPU. And the rejection
+log is EMPTY: attention is not being refused by supports_op, it is never
+offered to the backend at all.
+
+**Root cause: offload_op, not supports_op.** offload_op
+(backend-reg.cpp) returns true only for MUL_MAT/GET_ROWS whose src[0] (the
+weight) is already GPU-resident - a deliberate G36 guard to stop the
+scheduler routing CPU-resident weight layers to CUDA8. But attention's K.Q
+and probs.V matmuls have an *activation* as src[0] (K, or the attention
+probs), which lives on CPU. So offload_op returns false, the scheduler
+keeps the whole attention subgraph CPU-side, and supports_op is never even
+consulted on the softmax/matmul/mask nodes - hence zero GPU attention ops
+AND zero refusals. G41/G42 are correct and smoke-proven but are currently
+dead code on real models: the kernels exist, nothing calls them.
+
+**This reframes the roadmap.** The prior assumption (sections 8-10) was
+that landing G41/G42 would get attention onto the GPU. It did not, because
+the blocker was never op coverage - it was the offload policy. The two
+high-value levers now are:
+
+1. **Offload policy for activation-src0 matmuls.** Make attention's F32
+   matmuls actually reach G42. Subtle: naively returning true for F32
+   MUL_MAT would route activation-only matmuls to a GPU that must then
+   upload both operands every call - possibly slower, given the host
+   round-trip. Only worthwhile coupled with (2).
+
+2. **Device-resident execution across the graph (the real G50).** Kill the
+   Q8_0-era per-op host staging (alloc -> upload -> launch -> download ->
+   free every dispatch) and keep tensors resident on the GPU across nodes.
+   This is the prerequisite that turns (1) from a wash into a speedup, and
+   is the dominant cost behind the current -ngl 99 numbers.
+
+**Performance context.** -ngl 99 runs at ~1.2/0.8 t/s vs -ngl 0 at ~9.0/6.0
+t/s - GPU offload is currently a ~7x DECELERATION. This is fully explained
+by the two costs above (attention CPU round-trip every layer + per-op host
+staging on every GPU dispatch), not by slow kernels. It is not a coverage
+gap and not a G42-scope problem - G42's kernel is correct, it is simply
+never called. The honest status: correctness is done; making the GPU path
+faster than CPU is a structural residency/offload project, not another
+kernel checkpoint.
+
+**Revised priority below G53:** the residency/offload work above supersedes
+G44 (SCALE, broadcast-ADD) and G49 (F16 storage) as the highest-value next
+step, because without it every GPU op is host-staging-bound and adding more
+GPU ops makes the graph slower, not faster. G44/G49 remain worthwhile but
+are premature until the graph stops round-tripping. The G38 register-spill
+baseline (section 3.3) also remains open and independent.
+
+_Note: this is the first checkpoint driven by a real-model measurement
+rather than a smoke test. The op histogram above is the authoritative
+input; if future work contradicts this ordering, re-measure and follow the
+histogram - the same principle G39 established._
+
+---

@@ -2515,6 +2515,106 @@ splitting). The G38 register-spill baseline (section 3.3) also remains open
 and is independent of all of the above.
 
 
+### G53 status: transposed-dst bug in K-quant MUL_MAT — first real Q4_K model on Fermi
+
+Status: **FIXED, verified on GTX 560 with a real model.** First coherent
+Q4_K_M generation end-to-end on the CUDA8/Fermi backend (Qwen3-0.6B-Q4_K_M).
+
+G53 is a critical correctness fix, not a new-op checkpoint. It fixes a
+silent wrong-answer bug in the Q4_K and Q6_K MUL_MAT kernels that had been
+latent since those kernels landed - passing every smoke test while
+producing scrambled output on any real multi-token forward pass.
+
+#### The bug
+
+Both `kernel_mul_mat_q4k_f32` (ggml-cuda8-q4k.cu) and
+`kernel_mul_mat_q6k_f32` (ggml-cuda8-q6k.cu) wrote the output element in
+the wrong memory layout:
+
+```
+dst[row * ne11 + col] = smem[0];   // WRONG - transposed
+```
+
+ggml's mul_mat output is contiguous with ne[0] = ne01 (output features) as
+the fast-varying dimension, so element (row, col) belongs at index
+`row + col*ne01`. The kernel wrote a transposed index instead. Fixed in
+both kernels:
+
+```
+dst[col * ne01 + row] = smem[0];   // correct ggml dst layout
+```
+
+#### Why it was invisible until a real model
+
+`row*ne11 + col` and `col*ne01 + row` are equal **only when ne11 == 1**
+(single token / matrix-vector). Every K-quant smoke and every graph-builder
+Q4_K/Q6_K checkpoint (G17C, G18-G23) used ne11 == 1 - matvec shapes - so
+the transpose was a no-op and all of them passed. The bug only manifests at
+ne11 > 1, which is exactly what prompt prefill produces: the multi-token
+prompt's hidden states get scrambled by the transposed matmul, poisoning
+everything downstream. The characteristic symptom was structured-loop
+garbage (`uchosuchos`, `tobertober`) rather than random noise - the
+signature of transposed-but-not-random logits.
+
+This is the same class of bug the project has repeatedly guarded against
+(G37 SOFT_MAX_EXT, G45 ROPE freq_factors): produces wrong numbers, not an
+error; graph_compute reports SUCCESS; nothing fails loudly.
+
+#### Why Q8_0 worked but Q4_K/Q6_K did not
+
+The Q8_0 MUL_MAT path (exec_mul_mat_q8_0_f32_vec, ggml-cuda8-dispatch.cpp)
+loops per token and writes each token's output at
+`dst->data + t*bytes_out`, i.e. index `t*ne01 + r` - the correct ggml
+layout. So the prior real-model milestone (SmolLM2-135M in Q8_0) generated
+fine. The two K-quant kernels were the only matmuls writing the transposed
+layout, which is why the first Q4_K model exposed it.
+
+#### How it was found (bisection record)
+
+`-ngl 99` produced garbage; `-ngl 0` (weights on CPU) produced coherent
+text - isolating the bug to a GPU kernel. Forcing each suspect op to CPU
+one at a time via a temporary `return false` in supports_op:
+RMS_NORM, ROPE, GLU/SWIGLU, MUL - all still garbage, eliminating those.
+Forcing GGML_OP_MUL_MAT to CPU - coherent. That pinned it to the K-quant
+matmul (Q8_0 was already known-good from SmolLM2), and inspecting the dst
+write against ggml's layout found the transpose.
+
+#### Regression guard added (the test that should have caught it)
+
+The existing K-quant smokes cannot catch this because they are all ne11 ==
+1. G53 adds a multi-token (ne11 > 1) Q4_K/Q6_K MUL_MAT smoke whose CPU
+reference computes the **ggml** layout (`ref[row + col*ne01]`), then
+compares element by element. Against the old transposed kernel this test
+fails; against the fix it passes. This is the guard that turns "fixed by
+hand" into "cannot silently regress" - without it, the exact same bug could
+return unnoticed.
+
+#### Verification
+
+- `ggml-cuda8-mulmat-f32-smoke` and all 26 existing regression targets:
+  still pass (the fix is at ne11 > 1; the ne11 == 1 smokes are unaffected).
+- New ne11 > 1 K-quant smoke: fails on the old kernel, passes on the fix.
+- **Real model:** Qwen3-0.6B-Q4_K_M via llama-cli, -ngl 99, generates
+  coherent text ("Okay, the user said 'Once upon a time'... I need to
+  respond appropriately."). First real Q4_K model on this backend - the
+  prior high-water mark was SmolLM2-135M in Q8_0.
+
+#### Significant finding: attention never reaches the GPU (see backport-cuda8 section 11)
+
+The GGML_CUDA8_DEBUG_OPS=1 op histogram from the fixed run shows the whole
+attention inner block - SOFTMAX_EXT_F32 (G41), MUL_MAT_F32xF32 (G42),
+DIAG_MASK_INF_F32 - executing **zero** times on GPU, with zero refusals
+logged. Attention runs entirely on CPU, and it is not being refused by
+supports_op - it is never offered to the backend at all, because
+offload_op only returns true for MUL_MAT/GET_ROWS whose src[0] (the weight)
+is GPU-resident. Attention's K.Q and probs.V matmuls have an *activation*
+as src[0], which lives on CPU, so offload_op returns false and the
+scheduler keeps the entire attention subgraph CPU-side. G41/G42 are correct
+(smoke-proven) but currently dead code on real models. This, plus the
+per-op host-staging cost, is why -ngl 99 (1.2/0.8 t/s) is ~7x slower than
+-ngl 0 (9.0/6.0 t/s). Full analysis and next-phase framing in
+backport-cuda8.md section 11.
+
 
 
 
