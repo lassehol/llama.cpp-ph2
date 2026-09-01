@@ -155,11 +155,7 @@ extern "C" int ggml_cuda8_mul_mat_f32_f32_launch(
             cudaGetErrorString(err), (int) err);
         return -1;
     }
-
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) { ...; return -1; }
-    // TEST: rely on segment-end sync instead of per-op
-    // err = cudaDeviceSynchronize();
-    // if (err != cudaSuccess) { ...; return -1; }
+    // G56 sync-batching test: per-op cudaDeviceSynchronize() removed; rely on
+    // the segment-end cuda8_backend_synchronize() instead.
     return 0;
 }
