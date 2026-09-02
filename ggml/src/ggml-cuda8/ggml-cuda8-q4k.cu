@@ -109,7 +109,7 @@ __global__ void kernel_get_rows_q4k(
 //    thread does 8 values/superblock; 32-wide warp-synchronous reduction.
 //    Targets the matvec latency/reduction bottleneck (was ~2% of bandwidth).
 #define Q4K_WARP 32
-#define Q4K_ROWS_PER_BLOCK 16 //8, try 4, then 16
+#define Q4K_ROWS_PER_BLOCK 4 //8, try 4, then 16
 #define Q4K_BLOCK_THREADS (Q4K_WARP * Q4K_ROWS_PER_BLOCK)   // 256
 
 __global__ void kernel_mul_mat_q4k_f32(
