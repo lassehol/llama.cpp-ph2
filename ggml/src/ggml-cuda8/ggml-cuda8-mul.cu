@@ -68,12 +68,35 @@ extern "C" int ggml_cuda8_mul_broadcast_f32_launch(
         float * c,
         int n_total,
         int n_repeat) {
-    if (a == NULL || b == NULL || c == NULL || n_total <= 0 || n_repeat <= 0) {
+    if (a == NULL || b == NULL || c == NULL || n_total < 0 || n_repeat <= 0) {
         std::fprintf(stderr, "ggml-cuda8/mul_broadcast: invalid args "
             "(a=%p b=%p c=%p n_total=%d n_repeat=%d)\n",
             (void*)a, (void*)b, (void*)c, n_total, n_repeat);
         return -1;
     }
+    // n_total == 0: nothing to multiply (e.g. a zero-sized sub-batch tensor
+    // in llama.cpp's batched decode graph construction) - not an error.
+    // Skip the launch entirely.
+    if (n_total == 0) {
+        return 0;
+    }
+    const int block = 256;
+    const int grid  = ggml_cuda8_grid_1d(n_total, block);
+    kernel_mul_broadcast_f32<<<grid, block>>>(a, b, c, n_total, n_repeat);
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        std::fprintf(stderr, "ggml-cuda8/mul_broadcast: launch failed: %s\n",
+            cudaGetErrorString(err));
+        return -1;
+    }
+    err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        std::fprintf(stderr, "ggml-cuda8/mul_broadcast: sync failed: %s\n",
+            cudaGetErrorString(err));
+        return -1;
+    }
+    return 0;
+}
 
     const int block = 256;
     const int grid  = ggml_cuda8_grid_1d(n_total, block);
