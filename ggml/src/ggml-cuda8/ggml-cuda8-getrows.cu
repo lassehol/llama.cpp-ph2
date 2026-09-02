@@ -35,11 +35,18 @@ extern "C" int ggml_cuda8_op_get_rows_f32(
         int ne00,
         int n_tokens) {
 
-    if (src0 == NULL || src1 == NULL || dst == NULL || ne00 <= 0 || n_tokens <= 0) {
+    if (src0 == NULL || src1 == NULL || dst == NULL || ne00 <= 0 || n_tokens < 0) {
         std::fprintf(stderr, "ggml-cuda8/getrows: invalid args "
             "(src0=%p src1=%p dst=%p ne00=%d n_tokens=%d)\n",
             (void*)src0, (void*)src1, (void*)dst, ne00, n_tokens);
         return -1;
+    }
+    // n_tokens == 0: nothing to gather. Legitimate (e.g. a sub-batch with no
+    // output positions in llama.cpp's batched decode graph construction) -
+    // not an error. Skip the launch entirely rather than invoking a kernel
+    // with a zero-sized grid.
+    if (n_tokens == 0) {
+        return 0;
     }
 
     const int block_size = 256;
