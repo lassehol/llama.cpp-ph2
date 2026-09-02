@@ -2616,6 +2616,135 @@ per-op host-staging cost, is why -ngl 99 (1.2/0.8 t/s) is ~7x slower than
 backport-cuda8.md section 11.
 
 
+### G55 status: flat-copy CONT bug fixed — first fully GPU-resident LLM on CUDA8/Fermi
+
+Status: **FIXED, verified on GTX 560 with a real model.** This is the
+project's headline milestone: Qwen3-0.6B-Q4_K_M generates coherent text with
+the ENTIRE transformer - attention included - running on the GPU as a single
+graph segment per token. Not just weights and FFN (that was already working
+with attention on CPU); the whole thing.
+
+#### The bug
+
+`ggml_cuda8_exec_cont_f32` (ggml-cuda8-dispatch.cpp) flat-copied
+`src0->data -> dst->data` as one contiguous byte run via
+`ggml_cuda8_cpy_f32_d2d(src, dst, n_bytes)` - a launcher that takes only a
+byte count and never reads `src0->nb[]`. And `supported_cont_f32` accepted
+any F32 src0 without checking contiguity.
+
+This is self-contradictory: CONT exists *specifically* to make a
+NON-contiguous tensor contiguous (the G30A note: "CONT kernel - makes
+non-contiguous tensors contiguous - needed for KV cache after permute").
+ggml only inserts a CONT node when its input is non-contiguous, i.e.
+post-permute in attention. So CONT was always handed a permuted src0 with
+non-trivial strides, and always flat-copied it in the wrong element order -
+scrambling exactly the attention tensors it was meant to fix.
+
+Fixed with a strided-gather kernel (new file ggml-cuda8-cont.cu): dst is
+written packed/contiguous while src0 is read through its real byte strides
+nb[0..3]. The old contiguous case still works (strides just equal the packed
+layout), and the now-unused ggml_cuda8_cpy_f32_d2d path was removed from the
+CONT exec.
+
+#### Why it was invisible until now
+
+Same root cause as the G53 transposed-dst bug: no smoke test ever fed CONT a
+non-contiguous (permuted) src0. Every prior coherent run had attention on
+CPU (because `-nkvo` kept the KV cache host-side), so the attention CONTs -
+the only non-contiguous ones - never executed on the GPU. The moment
+attention became GPU-resident (see below), CONT fired for real and the bug
+surfaced immediately as structured-loop garbage (`ioneonaonaona`).
+
+#### How attention got onto the GPU (the config, not code)
+
+The blocker was never op coverage - G41/G42/G43 kernels existed and were
+correct but were dead code, because the scheduler placed the whole attention
+subgraph on CPU. Root cause: `-nkvo` (no-KV-offload) keeps the KV cache
+host-resident, so attention's K.Q / probs.V matmuls have a CPU operand and
+never get offered to the CUDA8 backend (zero supports_op refusals logged -
+they were never even asked).
+
+Dropping `-nkvo` puts the cache on the GPU. That required capping context
+(`-c 512`): the full-context F32 cache is ~896 MiB, which does not fit
+alongside Q4_K weights in the GTX 560's ~1 GB. At `-c 512` the cache is
+~11 MiB. With `-nkvo` removed and `-c 512`, the op histogram gained
+SET_ROWS_F32 (G43), MUL_MAT_F32xF32 (G42), SOFTMAX_EXT_F32 (G41) and
+CONT_F32 (G55) - the entire attention core, all at internally-consistent
+2:1 frequencies, and the graph collapsed to a single n_nodes=1125 segment
+per token with zero CPU<->GPU boundaries mid-graph.
+
+Working invocation:
+```
+llama-cli -m Qwen3-0.6B-Q4_K_M.gguf -ngl 99 -fa off \
+          --cache-type-k f32 --cache-type-v f32 -c 512 \
+          -no-cnv -st -p "..."
+```
+The F32 cache requirement stands until G49 (F16 storage); the context cap is
+a VRAM constraint of the 1 GB card, not a correctness limit.
+
+#### Regression guard
+
+Needs a permuted-src0 CONT smoke (feed CONT a ggml_permute'd, non-contiguous
+src0; compare against a CPU strided-gather reference). The existing CONT
+smoke uses contiguous input and cannot catch this - the same gap the ne11>1
+K-quant smoke closed for G53. Without it, a future edit can silently
+reintroduce the flat copy.
+
+#### Verification
+
+- Qwen3-0.6B-Q4_K_M, -ngl 99, GPU-resident attention: coherent output.
+- Op histogram: 1 segment/token (63 graph_compute calls for a 63-token run,
+  each n_nodes=1125), all attention ops present at consistent frequencies.
+- The 26 existing regression targets unaffected (the strided kernel handles
+  the contiguous case identically).
+
+#### Performance characterization (measured, not assumed)
+
+GPU-resident generation runs at ~0.8 tok/s vs ~6 tok/s CPU-only on the same
+box (Phenom II X6 1055T, 2010-era 6-core, no AVX). A per-op GPU timing probe
+(GGML_CUDA8_TIMING=1) over a real run gives the definitive breakdown:
+
+    ~1490 ms/graph total GPU compute, of which:
+      MUL_MAT_Q4_K   62%   5.49 ms/call
+      MUL_MAT_Q6_K   35%  17.83 ms/call
+      MUL_MAT_F32     3%   0.82 ms/call   (attention)
+      everything else <1% combined
+
+Findings:
+- **Compute-bound, not overhead-bound.** Sum-of-op time matches the
+  ~1250 ms/token baseline; there is no dispatch/boundary slack to reclaim.
+  Confirmed by elimination: boundary splits (Test B: graph is 1 segment),
+  per-op host staging (residency-aware ADD: no delta), and per-op device
+  sync (stripped from the two hottest kernels: no delta) were each measured
+  and ruled out.
+- **97% of GPU time is the two K-quant weight matmuls.** The entire attention
+  core that G41-G55 enabled costs <4% - necessary for correctness and to
+  collapse the CPU split, but negligible to run.
+- **Not register spilling.** ptxas (-DGGML_CUDA8_PTXAS_VERBOSE=ON, wired at
+  G38, first measured here): q4k mul_mat 24 registers, q6k 34 registers,
+  BOTH with 0 bytes spill stores / 0 loads. The §3.3 spill hypothesis is
+  disproved.
+- **Q6_K is 3.25x slower per call than Q4_K** (17.8 vs 5.5 ms), not from
+  spills but from occupancy: 34 reg/thread + __launch_bounds__(256,2) caps
+  Q6_K at 2-3 blocks/SM vs Q4_K's ~5 (GF114 has 32768 reg/SM), so fewer
+  concurrent warps hide less memory latency, compounded by heavier per-value
+  dequant.
+- **Bandwidth-underutilized, not bandwidth-bound.** The GTX 560's 128 GB/s
+  dwarfs the Phenom II's ~21 GB/s DDR3, yet the CPU wins - because the
+  hand-written Fermi-safe matmuls (one block per output row, no vectorized
+  loads, no dp4a, no cuBLAS) achieve only a fraction of the card's
+  bandwidth. There is theoretical headroom, but closing it is a substantial
+  kernel-engineering project (coalesced/vectorized loads, occupancy
+  rebalancing), not a one-line fix, with uncertain payoff on Fermi.
+
+Conclusion: 0.8 tok/s is the current honest number for this hardware pair. It
+is not a bug, not overhead, not spills - it is naive K-quant matmuls
+under-using the card's bandwidth. Correctness is the milestone; the GPU
+path's value is offloading the CPU (freeing the 6-core Phenom for other
+cluster work) and enabling models too large for CPU RAM, not beating CPU on a
+0.6B model. K-quant matmul throughput is a well-scoped optional future
+project with measured headroom, filed rather than pursued.
+
 
 
 

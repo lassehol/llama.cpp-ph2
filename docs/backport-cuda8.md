@@ -821,3 +821,131 @@ input; if future work contradicts this ordering, re-measure and follow the
 histogram - the same principle G39 established._
 
 ---
+G55/MILESTONE UPDATE — records the CONT flat-copy fix, the first
+fully-GPU-resident LLM, and the definitive performance characterization.
+Apply IN ADDITION TO backport-cuda8-append.md, -append-2.md, -append-3.md,
+-append-4.md. This is the milestone the whole G41-G55 arc was building toward.
+
+NOTE ON THE APPEND CHAIN: this is the fifth backport append file and the
+fifth README append file. The chain is now unwieldy - reading current status
+requires applying five layered patch files per doc in order, and some patch
+edits modify text inserted by earlier patch files. A one-time consolidation
+pass (merge all appends inline into README.md and backport-cuda8.md, retire
+the append files) is overdue and should happen before the next checkpoint.
+
+---
+
+EDIT 1 — in the ORIGINAL document, section "### 3. Latent correctness risks
+in the existing kernels", add a new subsection after 3.5 (the G53
+transposed-dst subsection from backport-cuda8-append-4.md):
+
+    **3.6 Flat-copy CONT ignored src0 strides — FIXED in G55, verified on a
+    real model.** ggml_cuda8_exec_cont_f32 flat-copied src0->data as one
+    contiguous byte run, never reading src0->nb[], and supported_cont_f32
+    accepted any F32 without a contiguity check. But CONT exists ONLY to
+    make a non-contiguous tensor contiguous (post-permute, in attention) -
+    ggml never emits a CONT on already-contiguous input - so it was always
+    handed a permuted src0 and always copied it in the wrong element order.
+    Invisible until attention ran on GPU (G55 config below), because the
+    attention CONTs were the only non-contiguous ones and they never
+    executed while attention was CPU-side. Same class as 3.5: wrong numbers,
+    SUCCESS reported, no smoke test fed it permuted input. Fixed with a
+    strided-gather kernel (ggml-cuda8-cont.cu). See ggml-cuda8/README.md G55.
+
+---
+
+EDIT 2 — supersedes backport-cuda8-append-4.md's section 11 ("First real
+Q4_K model, and the finding that reframes the roadmap"). That section's
+central claim - that offload_op is the blocker and Step-2 offload work is
+needed to get attention on GPU - was CORRECT about the mechanism but the FIX
+turned out to be configuration, not code. Update section 11's conclusion and
+append section 12:
+
+In section 11, the "Root cause: offload_op, not supports_op" analysis stands
+and is confirmed. But replace its "This reframes the roadmap" closing (the
+two-lever list and the "device-resident execution is the real G50"
+framing) with:
+
+    **Resolution (G55).** The offload analysis was right that attention was
+    never being offered to the backend, but the cause was the -nkvo flag
+    keeping the KV cache host-side, not a code gap in offload_op. Dropping
+    -nkvo (with -c 512 to fit the F32 cache in 1 GB) put the cache - and
+    therefore attention - on the GPU with NO code change. Attention then ran
+    correctly after one more bug fix (the CONT flat-copy, G55). The
+    device-residency and per-op-staging concerns raised here were
+    subsequently MEASURED and found not to be the bottleneck - see section
+    12. This section's "next phase is a residency/offload project"
+    conclusion is superseded.
+
+---
+
+EDIT 3 — new top-level section at the end of the document, after section 11,
+before the closing italic attribution:
+
+---
+
+### 12. Milestone: first fully GPU-resident LLM, and the definitive perf characterization
+
+**The milestone.** Qwen3-0.6B-Q4_K_M generates coherent text with the entire
+transformer - attention included - resident on the GTX 560, as a single
+n_nodes=1125 graph segment per token with zero CPU<->GPU boundaries
+mid-graph. This is the goal the G41 (SOFTMAX_EXT), G42 (F32 MUL_MAT), G43
+(SET_ROWS / F32 KV cache) and G55 (strided CONT) checkpoints were all built
+toward. Correctness is achieved end to end on 2011 hardware.
+
+**Getting there was configuration, then one bug.** Attention reached the GPU
+by dropping -nkvo and capping context to -c 512 (the full-context F32 cache
+is ~896 MiB and does not fit; at 512 it is ~11 MiB). That immediately
+exposed the CONT flat-copy bug (section 3.6 / G55), fixed with a
+strided-gather kernel. No offload_op or scheduler code change was needed -
+the section 11 hypothesis that code was required is superseded.
+
+**The definitive perf characterization.** A per-op GPU timing probe over a
+real run settles the performance question that three prior experiments had
+only narrowed by elimination:
+
+    ~1490 ms/graph total GPU compute:
+      MUL_MAT_Q4_K   62%    5.49 ms/call
+      MUL_MAT_Q6_K   35%   17.83 ms/call
+      MUL_MAT_F32     3%    0.82 ms/call  (attention)
+      all else       <1%
+
+- Compute-bound, not overhead-bound (sum-of-op matches the ~1250 ms/token
+  baseline). Boundary splits, per-op host staging, and per-op device sync
+  were each independently measured and ruled out.
+- 97% of GPU time is the two K-quant WEIGHT matmuls. The entire attention
+  core G41-G55 enabled is <4% - essential for correctness, negligible to
+  run.
+- NOT register spilling. ptxas (-DGGML_CUDA8_PTXAS_VERBOSE=ON, wired at G38,
+  first actually measured here): q4k 24 reg, q6k 34 reg, both 0 spill. The
+  section 3.3 spill hypothesis is disproved.
+- Q6_K is 3.25x slower/call than Q4_K from OCCUPANCY (34 reg +
+  __launch_bounds__(256,2) => 2-3 blocks/SM vs Q4_K's ~5), not spills.
+- Bandwidth-UNDERutilized, not bandwidth-bound: 128 GB/s card loses to a
+  ~21 GB/s DDR3 Phenom II X6 1055T because the naive one-block-per-row
+  matmuls (no vectorized loads, no dp4a, no cuBLAS) achieve a fraction of
+  the card's bandwidth.
+
+**Honest conclusion.** 0.8 tok/s is correct-and-expected for this period-fair
+pairing (2011 Fermi vs 2010 Phenom II), and the CPU wins on a 0.6B model. The
+value of the GPU path is offloading the 6-core Phenom for other cluster work
+and enabling models too large for CPU RAM, NOT raw speed here. There IS
+measured bandwidth headroom in the K-quant matmuls, but capturing it is a
+substantial kernel-engineering project (coalesced/vectorized loads, occupancy
+rebalancing) with uncertain Fermi payoff - filed as an optional future
+project, not pursued now.
+
+**Revised roadmap.** Correctness is done. Below this milestone: the K-quant
+matmul throughput project (optional, measured headroom, high effort); G49
+(F16 storage - removes the F32-cache VRAM pressure that forces the -c 512
+cap, so larger contexts fit); G44 (SCALE, broadcast-ADD - now genuinely
+premature, since GPU coverage is not the constraint). The G38 register
+baseline (section 3.3) is now MEASURED and clean; that item is closed.
+
+_This is the second consecutive checkpoint driven by real-model measurement
+(G53 was the first). Every performance hypothesis this arc was tested and
+most were falsified; the surviving conclusion - compute-bound on
+bandwidth-underutilized K-quant matmuls - is the measured truth, not an
+assumption. Follow the measurement._
+
+---
