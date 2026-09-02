@@ -69,6 +69,9 @@ extern "C" int ggml_cuda8_mul_broadcast_f32_launch(
         int n_total,
         int n_repeat) {
     if (a == NULL || b == NULL || c == NULL || n_total <= 0 || n_repeat <= 0) {
+        std::fprintf(stderr, "ggml-cuda8/mul_broadcast: invalid args "
+            "(a=%p b=%p c=%p n_total=%d n_repeat=%d)\n",
+            (void*)a, (void*)b, (void*)c, n_total, n_repeat);
         return -1;
     }
 
