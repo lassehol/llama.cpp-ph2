@@ -147,6 +147,7 @@ cuda_add_library(ggml-cuda8-kernels STATIC
     ggml-cuda8-softmax-ext.cu
     ggml-cuda8-mulmat-f32.cpp
     ggml-cuda8-mulmat-f32.cu
+	ggml-cuda8-mulmat-f16.cu
     ggml-cuda8-rms-norm.cu
     ggml-cuda8-mul.cu
     ggml-cuda8-rope.cu
@@ -1368,3 +1369,10 @@ target_link_libraries(ggml-cuda8-mulmat-f32-smoke
     ggml-cuda8-kernels
     ${CUDA_LIBRARIES}
 )
+# -- G49: F16-read attention MUL_MAT smoke ------------------------------------
+cuda_add_executable(ggml-cuda8-mulmat-f16-smoke
+    ggml-cuda8-mulmat-f16-smoke.cu
+    ggml-cuda8-mulmat-f16.cu)
+target_link_libraries(ggml-cuda8-mulmat-f16-smoke ${CUDA_LIBRARIES})
+set_target_properties(ggml-cuda8-mulmat-f16-smoke PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
