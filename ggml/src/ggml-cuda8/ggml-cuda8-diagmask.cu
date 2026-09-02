@@ -31,9 +31,12 @@ extern "C" int ggml_cuda8_op_diag_mask_inf_f32(
         const float * x, float * dst,
         int ncols, int nrows, int rows_per_channel, int n_past) {
 
-    if (x == NULL || dst == NULL || ncols <= 0 || nrows <= 0) {
+    if (x == NULL || dst == NULL || ncols <= 0 || nrows < 0) {
         std::fprintf(stderr, "ggml-cuda8/diagmask: invalid args\n");
         return -1;
+    }
+    if (nrows == 0) {
+        return 0;   // nothing to do - zero-sized sub-batch, not an error
     }
 
     const int block_size = 256;

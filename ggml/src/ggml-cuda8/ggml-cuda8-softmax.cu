@@ -110,11 +110,17 @@ extern "C" int ggml_cuda8_softmax_rows_f32_launch(
     int rows,
     int cols
 ) {
-    if (src == NULL || dst == NULL || rows <= 0 || cols <= 0) {
+    if (src == NULL || dst == NULL || rows < 0 || cols < 0) {
         std::fprintf(stderr,
             "ggml-cuda8/softmax-rows: invalid args rows=%d cols=%d\n",
             rows, cols);
         return -1;
+    }
+    if (rows == 0) {
+        return 0;   // nothing to do - zero-sized sub-batch, not an error
+    }
+    if (cols == 0) {
+        return 0;   // nothing to do - zero-sized sub-batch, not an error
     }
 
     ggml_cuda8_softmax_rows_f32_kernel<<<ggml_cuda8_grid_rows(rows), GGML_CUDA8_SOFTMAX_BLOCK_SIZE>>>(

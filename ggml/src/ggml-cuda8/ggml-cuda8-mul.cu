@@ -21,9 +21,12 @@ extern "C" int ggml_cuda8_mul_f32_launch(
         const float * b,
         float * c,
         int n) {
-    if (a == NULL || b == NULL || c == NULL || n <= 0) {
+    if (a == NULL || b == NULL || c == NULL || n < 0) {
         std::fprintf(stderr, "ggml-cuda8/mul: invalid args\n");
         return -1;
+    }
+    if (n == 0) {
+        return 0;   // nothing to do - zero-sized sub-batch, not an error
     }
 
     const int block = 256;

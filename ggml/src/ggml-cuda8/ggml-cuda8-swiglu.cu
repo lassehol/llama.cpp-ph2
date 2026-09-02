@@ -75,9 +75,12 @@ extern "C" int ggml_cuda8_op_swiglu_f32(
         int dst_stride,
         int swapped) {
 
-    if (src0 == NULL || dst == NULL || nc <= 0 || nrows <= 0) {
+    if (src0 == NULL || dst == NULL || nc <= 0 || nrows < 0) {
         std::fprintf(stderr, "ggml-cuda8/swiglu: invalid args nc=%d nrows=%d\n", nc, nrows);
         return -1;
+    }
+    if (nrows == 0) {
+        return 0;   // nothing to do - zero-sized sub-batch, not an error
     }
 
     const int total = nc * nrows;

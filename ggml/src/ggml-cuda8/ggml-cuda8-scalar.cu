@@ -42,9 +42,12 @@ extern "C" int ggml_cuda8_add_scalar_f32_launch(
     float * dst,
     int n
 ) {
-    if (src == NULL || dst == NULL || n <= 0) {
+    if (src == NULL || dst == NULL || n < 0) {
         std::fprintf(stderr, "ggml-cuda8/scalar-add: invalid args\n");
         return -1;
+    }
+    if (n == 0) {
+        return 0;   // nothing to do - zero-sized sub-batch, not an error
     }
 
     const int block = 256;
@@ -77,11 +80,13 @@ extern "C" int ggml_cuda8_mul_scalar_f32_launch(
     float * dst,
     int n
 ) {
-    if (src == NULL || dst == NULL || n <= 0) {
+    if (src == NULL || dst == NULL || n < 0) {
         std::fprintf(stderr, "ggml-cuda8/scalar-mul: invalid args\n");
         return -1;
     }
-
+    if (n == 0) {
+        return 0;   // nothing to do - zero-sized sub-batch, not an error
+    }
     const int block = 256;
     const int grid  = ggml_cuda8_grid_1d(n, block);
 

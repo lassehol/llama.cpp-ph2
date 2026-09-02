@@ -108,13 +108,20 @@ extern "C" int ggml_cuda8_mul_mat_f16_f32_launch(
     size_t nb1,  size_t nb2,  size_t nb3
 ) {
     if (src0 == NULL || src1 == NULL || dst == NULL ||
-        ne00 <= 0 || ne01 <= 0 || ne02 <= 0 || ne03 <= 0 ||
-        ne11 <= 0 || ne12 <= 0 || ne13 <= 0) {
+        ne00 <= 0 || ne01 < 0 || ne02 <= 0 || ne03 <= 0 ||
+        ne11 < 0 || ne12 <= 0 || ne13 <= 0) {
         std::fprintf(stderr,
-            "ggml-cuda8/mulmat-f16: invalid args ne00=%d ne01=%d ne02=%d ne03=%d "
+            "ggml-cuda8/mulmat-f32: invalid args ne00=%d ne01=%d ne02=%d ne03=%d "
             "ne11=%d ne12=%d ne13=%d\n",
             ne00, ne01, ne02, ne03, ne11, ne12, ne13);
         return -1;
+    }
+    // ne01/ne11 == 0: a zero-sized sub-batch row/token count (e.g. a batch
+    // split that leaves no positions for this graph fragment) - not an
+    // error. Nothing to compute; the caller's dst allocation for the zero
+    // dimension is itself zero-sized, so there is nothing to write either.
+    if (ne01 == 0 || ne11 == 0) {
+        return 0;
     }
     if (ne12 % ne02 != 0 || ne13 % ne03 != 0) {
         std::fprintf(stderr,
@@ -126,7 +133,11 @@ extern "C" int ggml_cuda8_mul_mat_f16_f32_launch(
     const int r3 = ne13 / ne03;
 
     const long long total_rows = (long long) ne01 * ne11 * ne12 * ne13;
-    if (total_rows <= 0 || total_rows > 0x7fffffffLL) {
+    // total_rows == 0 is unreachable here (ne01/ne11 == 0 already returned
+    // above; ne02/ne03/ne12/ne13 are guarded > 0), but keep the guard exact
+    // rather than assuming - only genuinely negative/overflowing is an error.
+    if (total_rows < 0 || total_rows > 0x7fffffffLL) {
+
         std::fprintf(stderr,
             "ggml-cuda8/mulmat-f16: row count out of range (%lld)\n", total_rows);
         return -1;
