@@ -1315,6 +1315,12 @@ target_link_libraries(ggml-cuda8-oversized-smoke
     ${CUDA_LIBRARIES}
 )
 
+cuda_add_executable(ggml-cuda8-set-rows-f16-smoke
+    ggml-cuda8-set-rows-f16-smoke.cu
+    ggml-cuda8-set-rows.cu)
+target_link_libraries(ggml-cuda8-set-rows-f16-smoke ${CUDA_LIBRARIES})
+set_target_properties(ggml-cuda8-set-rows-f16-smoke PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
 cuda_add_executable(ggml-cuda8-cont-smoke
     ggml-cuda8-cont-smoke.cu
     ggml-cuda8-cont.cu)
