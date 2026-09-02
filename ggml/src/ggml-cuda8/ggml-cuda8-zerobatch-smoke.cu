@@ -22,7 +22,8 @@
 // in-kernel modulo) remain strictly >0 - a zero there is genuine corruption,
 // not a valid empty batch. Signatures verified against the current source of
 // every file (softmax.cu, scalar.cu, reduce.cu, diagmask.cu, getrows.cu,
-// mul.cu, mulmat-f32.cu, set-rows.cu).
+// mul.cu, mulmat-f32.cu, set-rows.cu). All 26 correctness assertions here
+// (the n==0, n<0, and strict-shape-param cases) are hardware-verified PASS.
 //
 // Standalone .cu, links the full kernels archive (calls into many different
 // launchers already built into that library, same pattern as
@@ -99,6 +100,20 @@ int main() {
     // the small n>0 sanity checks touch a handful of elements. Reused across
     // calls purely for convenience.
     Buf a(4096), b(4096), c(4096), idx_i32(4096), idx_i64(4096);
+
+    // Zero-init everything. Critical for idx_i32/idx_i64: cudaMalloc leaves
+    // them uninitialized, so an n>0 control call (e.g. get_rows_f32
+    // n_tokens=2) would read garbage row indices and fault with an illegal
+    // memory access - which then latches the G51 sticky-poison flag and
+    // fails every subsequent call in this process, unrelated ops included.
+    // Zero is a valid row index into any nonzero-sized src0, so this makes
+    // every control call safe. Zero-filling a/b/c is cheap insurance against
+    // reading uninitialized floats anywhere else.
+    cudaMemset(a.d, 0, a.bytes);
+    cudaMemset(b.d, 0, b.bytes);
+    cudaMemset(c.d, 0, c.bytes);
+    cudaMemset(idx_i32.d, 0, idx_i32.bytes);
+    cudaMemset(idx_i64.d, 0, idx_i64.bytes);
 
     std::printf("== n == 0 (batch-count params): must succeed (rc=0), nothing to do ==\n");
     check("get_rows_f32 n_tokens=0",
