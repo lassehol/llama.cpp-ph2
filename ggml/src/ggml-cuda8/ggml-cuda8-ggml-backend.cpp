@@ -332,13 +332,19 @@ static enum ggml_status cuda8_backend_graph_compute(ggml_backend_t backend, stru
                     cuda8_op = GGML_CUDA8_OP_MUL_MAT_Q6_K_F32;
                     opname = "MUL_MAT_Q6_KxF32";
                 } else if (src0->type == GGML_TYPE_F32) {
-                    // G42: batched attention matmul. Not flattened - kernel
-                    // needs real ne[]/nb[] for broadcast + permuted views.
                     dispatch_src0 = src0;
                     dispatch_src1 = src1;
                     dispatch_dst  = node;
                     cuda8_op = GGML_CUDA8_OP_MUL_MAT_F32_F32;
                     opname = "MUL_MAT_F32xF32";
+                } else if (src0->type == GGML_TYPE_F16) {
+                    // G49: F16 KV cache read (K.Q / probs.V with F16 K/V).
+                    dispatch_src0 = src0;
+                    dispatch_src1 = src1;
+                    dispatch_dst  = node;
+                    cuda8_op = GGML_CUDA8_OP_MUL_MAT_F16_F32;
+                    opname = "MUL_MAT_F16xF32";
+                } else {
                 } else {
                     std::fprintf(stderr, "ggml-cuda8/backend graph_compute: MUL_MAT node %d unsupported src0 type %d\n", i, (int)src0->type);
                     ggml_cuda8_context_destroy(ctx);
@@ -458,12 +464,12 @@ static enum ggml_status cuda8_backend_graph_compute(ggml_backend_t backend, stru
             } break;
             // G43: SET_ROWS - the KV cache write.
             case GGML_OP_SET_ROWS: {
-                if (node->type != GGML_TYPE_F32 ||
+                if ((node->type != GGML_TYPE_F32 && node->type != GGML_TYPE_F16) ||
                     src0 == NULL || src0->type != GGML_TYPE_F32 ||
                     src1 == NULL || src1->type != GGML_TYPE_I64) {
                     std::fprintf(stderr,
                         "ggml-cuda8/backend graph_compute: SET_ROWS node %d unsupported types "
-                        "(dst=%d src0=%d src1=%d; F16 cache needs G49)\n",
+                        "(dst=%d src0=%d src1=%d)\n",
                         i, (int) node->type,
                         src0 ? (int) src0->type : -1,
                         src1 ? (int) src1->type : -1);
@@ -473,8 +479,13 @@ static enum ggml_status cuda8_backend_graph_compute(ggml_backend_t backend, stru
                 dispatch_src0 = src0;
                 dispatch_src1 = src1;
                 dispatch_dst  = node;
-                cuda8_op = GGML_CUDA8_OP_SET_ROWS_F32;
-                opname = "SET_ROWS_F32";
+                if (node->type == GGML_TYPE_F16) {
+                    cuda8_op = GGML_CUDA8_OP_SET_ROWS_F16;
+                    opname = "SET_ROWS_F16";
+                } else {
+                    cuda8_op = GGML_CUDA8_OP_SET_ROWS_F32;
+                    opname = "SET_ROWS_F32";
+                }
             } break;
             default:
                 std::fprintf(stderr, "ggml-cuda8/backend graph_compute: unsupported node %d op=%d\n", i, (int) node->op);

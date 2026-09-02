@@ -237,7 +237,6 @@ static bool ggml_backend_cuda8_device_supports_op_impl(const struct ggml_tensor 
         case GGML_OP_TRANSPOSE:
             return true;
 		case GGML_OP_MUL_MAT: {
-			//if (op->src[0]->type == GGML_TYPE_F32) return false; // TEMP
             if (!op->src[0] || !op->src[1]) return false;
             if (op->type != GGML_TYPE_F32) return false;
             if (op->src[1]->type != GGML_TYPE_F32) return false;
@@ -246,10 +245,15 @@ static bool ggml_backend_cuda8_device_supports_op_impl(const struct ggml_tensor 
                 op->src[0]->type == GGML_TYPE_Q6_K) {
                 return true;
             }
-            // G42: batched F32xF32 (attention matmuls). Re-validates shape
-            // independently rather than trusting the dispatcher alone.
-            if (op->src[0]->type != GGML_TYPE_F32) return false;
-            if (op->src[0]->nb[0] != sizeof(float)) return false;
+            // G42/G49: batched F32xF32 (attention) OR F16xF32 (F16 KV cache).
+            // Re-validates shape independently rather than trusting dispatcher.
+            if (op->src[0]->type != GGML_TYPE_F32 &&
+                op->src[0]->type != GGML_TYPE_F16) return false;
+            if (op->src[0]->type == GGML_TYPE_F32) {
+                if (op->src[0]->nb[0] != sizeof(float)) return false;
+            } else {
+                if (op->src[0]->nb[0] != ggml_type_size(GGML_TYPE_F16)) return false;
+            }
             if (op->src[1]->nb[0] != sizeof(float)) return false;
             if (op->nb[0] != sizeof(float)) return false;
             if (op->src[0]->ne[0] != op->src[1]->ne[0]) return false;
@@ -362,8 +366,9 @@ static bool ggml_backend_cuda8_device_supports_op_impl(const struct ggml_tensor 
         // the scheduler has nowhere else to put it and aborts. Hence the F32
         // cache requirement (--cache-type-k/v f32) until G49 adds F16 stores.
         case GGML_OP_SET_ROWS: {
-			//if (op->src[0]->type == GGML_TYPE_F32) return false; // TEMP
-            if (op->type != GGML_TYPE_F32) return false;
+            // G49: dst may be F32 (default) or F16 (F16 KV cache).
+            if (op->type != GGML_TYPE_F32 && op->type != GGML_TYPE_F16) return false;
+            if (!op->src[0] || op->src[0]->type != GGML_TYPE_F32) return false;
             if (!op->src[0] || op->src[0]->type != GGML_TYPE_F32) return false;
             if (!op->src[1] || op->src[1]->type != GGML_TYPE_I64) return false;
 

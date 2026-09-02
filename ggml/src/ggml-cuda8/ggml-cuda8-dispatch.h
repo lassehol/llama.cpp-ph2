@@ -61,6 +61,9 @@ enum ggml_cuda8_op_id {
 
     // G43: SET_ROWS scatter - writes the KV cache. dst[idx[i]] = src0[i].
     GGML_CUDA8_OP_SET_ROWS_F32,
+    // G49: F16 KV cache. SET_ROWS with F16 dst; MUL_MAT with F16 src0 (K/V).
+    GGML_CUDA8_OP_SET_ROWS_F16,
+    GGML_CUDA8_OP_MUL_MAT_F16_F32,
 };
 
 const char * ggml_cuda8_op_name(int op_id);

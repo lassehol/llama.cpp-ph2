@@ -21,6 +21,21 @@
 #include <cstdio>
 #include "ggml-cuda8-mulmat-f32.h"
 #include "ggml-cuda8-softmax-ext.h"
+// G49: F16 KV-cache launchers.
+extern "C" int ggml_cuda8_op_set_rows_f16(
+        const void * src0, const void * idx, void * dst,
+        int nc, int nr, int ne02, int ne03,
+        int ne11, int ne12, int ne1,
+        size_t nb01, size_t nb02, size_t nb03,
+        size_t nb10, size_t nb11, size_t nb12,
+        size_t nb1,  size_t nb2,  size_t nb3);
+extern "C" int ggml_cuda8_mul_mat_f16_f32_launch(
+        const void * src0, const float * src1, float * dst,
+        int ne00, int ne01, int ne02, int ne03,
+        int ne11, int ne12, int ne13,
+        size_t nb01, size_t nb02, size_t nb03,
+        size_t nb11, size_t nb12, size_t nb13,
+        size_t nb1,  size_t nb2,  size_t nb3);
 // Forward declarations for K-quant dispatch functions
 static int supported_mul_mat_q4k_f32(const struct ggml_cuda8_context*, const struct ggml_tensor*, const struct ggml_tensor*, const struct ggml_tensor*);
 static int supported_mul_mat_q6k_f32(const struct ggml_cuda8_context*, const struct ggml_tensor*, const struct ggml_tensor*, const struct ggml_tensor*);
@@ -109,6 +124,8 @@ const char * ggml_cuda8_op_name(int op_id) {
         case GGML_CUDA8_OP_SWIGLU_F32:       return "SWIGLU_F32";
 		case GGML_CUDA8_OP_MUL_MAT_F32_F32: return "MUL_MAT_F32xF32";
         case GGML_CUDA8_OP_SET_ROWS_F32:     return "SET_ROWS_F32";
+        case GGML_CUDA8_OP_SET_ROWS_F16:     return "SET_ROWS_F16";
+        case GGML_CUDA8_OP_MUL_MAT_F16_F32:  return "MUL_MAT_F16xF32";
 		case GGML_CUDA8_OP_SOFTMAX_EXT_F32: return "SOFTMAX_EXT_F32";
         default:                                  return "UNKNOWN";
     }
@@ -298,6 +315,80 @@ static int ggml_cuda8_exec_set_rows_f32(
         (int) dst->ne[1],
         src0->nb[1], src0->nb[2], src0->nb[3],
         src1->nb[0], src1->nb[1], src1->nb[2],
+        dst->nb[1],  dst->nb[2],  dst->nb[3]);
+}
+// -- G49: F16 KV-cache SET_ROWS (F32 src -> F16 dst) --------------------------
+static int ggml_cuda8_supported_set_rows_f16(
+        const struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * src1,
+        const struct ggml_tensor * dst) {
+    (void) ctx;
+    if (src0 == NULL || src1 == NULL || dst == NULL) return 0;
+    if (src0->type != GGML_TYPE_F32) return 0;   // source activations are F32
+    if (dst->type  != GGML_TYPE_F16) return 0;   // F16 cache destination
+    if (src1->type != GGML_TYPE_I64) return 0;
+    if (dst->ne[0] != src0->ne[0]) return 0;
+    if (dst->ne[2] != src0->ne[2]) return 0;
+    if (dst->ne[3] != src0->ne[3]) return 0;
+    if (src1->ne[1] == 0 || src1->ne[2] == 0)      return 0;
+    if (src0->ne[2] % src1->ne[1] != 0)            return 0;
+    if (src0->ne[3] % src1->ne[2] != 0)            return 0;
+    if (src1->ne[0] < src0->ne[1])                 return 0;
+    return 1;
+}
+static int ggml_cuda8_exec_set_rows_f16(
+        struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * src1,
+        struct ggml_tensor * dst) {
+    (void) ctx;
+    return ggml_cuda8_op_set_rows_f16(
+        src0->data, src1->data, dst->data,
+        (int) src0->ne[0], (int) src0->ne[1],
+        (int) src0->ne[2], (int) src0->ne[3],
+        (int) src1->ne[1], (int) src1->ne[2], (int) dst->ne[1],
+        src0->nb[1], src0->nb[2], src0->nb[3],
+        src1->nb[0], src1->nb[1], src1->nb[2],
+        dst->nb[1],  dst->nb[2],  dst->nb[3]);   // dst->nb are F16 byte strides
+}
+// -- G49: F16-src0 attention MUL_MAT (F16 K/V x F32 Q/probs) ------------------
+static int ggml_cuda8_supported_mul_mat_f16_f32(
+        const struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * src1,
+        const struct ggml_tensor * dst) {
+    (void) ctx;
+    if (src0 == NULL || src1 == NULL || dst == NULL) return 0;
+    if (src0->data == NULL || src1->data == NULL || dst->data == NULL) return 0;
+    if (src0->type != GGML_TYPE_F16) return 0;
+    if (src1->type != GGML_TYPE_F32) return 0;
+    if (dst->type  != GGML_TYPE_F32) return 0;
+    if (src0->nb[0] != ggml_type_size(GGML_TYPE_F16)) return 0;
+    if (src1->nb[0] != sizeof(float)) return 0;
+    if (dst->nb[0]  != sizeof(float)) return 0;
+    if (src0->ne[0] != src1->ne[0]) return 0;
+    if (src0->ne[2] <= 0 || src0->ne[3] <= 0) return 0;
+    if (src1->ne[2] % src0->ne[2] != 0) return 0;
+    if (src1->ne[3] % src0->ne[3] != 0) return 0;
+    if (dst->ne[0] != src0->ne[1]) return 0;
+    if (dst->ne[1] != src1->ne[1]) return 0;
+    if (dst->ne[2] != src1->ne[2]) return 0;
+    if (dst->ne[3] != src1->ne[3]) return 0;
+    return 1;
+}
+static int ggml_cuda8_exec_mul_mat_f16_f32(
+        struct ggml_cuda8_context * ctx,
+        const struct ggml_tensor * src0,
+        const struct ggml_tensor * src1,
+        struct ggml_tensor * dst) {
+    (void) ctx;
+    return ggml_cuda8_mul_mat_f16_f32_launch(
+        src0->data, (const float *) src1->data, (float *) dst->data,
+        (int) src0->ne[0], (int) src0->ne[1], (int) src0->ne[2], (int) src0->ne[3],
+        (int) src1->ne[1], (int) src1->ne[2], (int) src1->ne[3],
+        src0->nb[1], src0->nb[2], src0->nb[3],
+        src1->nb[1], src1->nb[2], src1->nb[3],
         dst->nb[1],  dst->nb[2],  dst->nb[3]);
 }
 // -- G40: SWIGLU -------------------------------------------------------------
@@ -624,6 +715,10 @@ int ggml_cuda8_dispatch_supported(
             return ggml_cuda8_supported_swiglu_f32(ctx, src0, src1, dst);
         case GGML_CUDA8_OP_SET_ROWS_F32:
             return ggml_cuda8_supported_set_rows_f32(ctx, src0, src1, dst);
+        case GGML_CUDA8_OP_SET_ROWS_F16:
+            return ggml_cuda8_supported_set_rows_f16(ctx, src0, src1, dst);
+        case GGML_CUDA8_OP_MUL_MAT_F16_F32:
+            return ggml_cuda8_supported_mul_mat_f16_f32(ctx, src0, src1, dst);
 		case GGML_CUDA8_OP_MUL_MAT_F32_F32:
             return ggml_cuda8_supported_mul_mat_f32_f32(ctx, src0, src1, dst);
 		case GGML_CUDA8_OP_SOFTMAX_EXT_F32:
@@ -701,6 +796,10 @@ int ggml_cuda8_dispatch_execute(
             return ggml_cuda8_exec_mul_mat_f32_f32(ctx, src0, src1, dst);
         case GGML_CUDA8_OP_SET_ROWS_F32:
             return ggml_cuda8_exec_set_rows_f32(ctx, src0, src1, dst);
+        case GGML_CUDA8_OP_SET_ROWS_F16:
+            return ggml_cuda8_exec_set_rows_f16(ctx, src0, src1, dst);
+        case GGML_CUDA8_OP_MUL_MAT_F16_F32:
+            return ggml_cuda8_exec_mul_mat_f16_f32(ctx, src0, src1, dst);
 		case GGML_CUDA8_OP_SOFTMAX_EXT_F32:
 			return ggml_cuda8_exec_softmax_ext_f32(ctx, src0, src1, dst);
         default:
