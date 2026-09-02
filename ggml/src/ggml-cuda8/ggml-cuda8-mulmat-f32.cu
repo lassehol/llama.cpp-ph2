@@ -1,46 +1,34 @@
 // ggml/src/ggml-cuda8/ggml-cuda8-mulmat-f32.cu
 //
 // G42: batched, broadcast-aware F32xF32 matrix multiply kernel - the
-// attention matmuls (K.Q, probs.V). CUDA8/Fermi-safe: one block per output
-// element (i01,i11,i12,i13), shared-memory tree reduction (no warp
-// shuffle), same style as ggml-cuda8-q4k.cu / ggml-cuda8-q6k.cu.
+// attention matmuls (K.Q, probs.V).
 //
-// Semantics match ggml_mul_mat(a=src0, b=src1):
+// G58: warp-per-output-element rewrite. The G42 kernel used one 256-thread
+// block per output element with a 256-wide __syncthreads tree reduction.
+// For attention, ne00 (the reduction dim = head_dim, ~128, or n_kv) is small,
+// so a 256-thread block left half its threads idle and spent most of its time
+// in the reduction, not the dot product. Once the K-quant weight matmuls were
+// warp-optimized (G56/G57), this kernel became ~52% of all GPU time at
+// 0.92 ms/call - 5x slower than the tuned K-quant matmuls. This rewrite gives
+// it the same treatment: one warp (32 threads) per output element, 8 warps
+// (256 threads) per block = 8 elements/block, the 32 lanes split the ne00
+// reduction, and a 32-wide warp-synchronous reduction (volatile shared, no
+// __syncthreads within a warp on Fermi's lockstep warps) replaces the
+// 256-wide tree.
+//
+// Semantics unchanged from G42, match ggml_mul_mat(a=src0, b=src1):
 //   dst[i01, i11, i12, i13] = sum_c src0[c, i01, i12/r2, i13/r3] * src1[c, i11, i12, i13]
-//   where r2 = ne12/ne02, r3 = ne13/ne03 (GQA-style head broadcast: src0
-//   repeats to match src1's larger head/batch count).
+//   where r2 = ne12/ne02, r3 = ne13/ne03 (GQA-style head broadcast).
 //
 // dim 0 (the reduction dimension) is required contiguous on both src0 and
-// src1 (nb00/nb10 == sizeof(float), enforced by the caller in
-// ggml-cuda8-mulmat-f32.cpp, not re-checked here). Dims 1-3 take explicit
-// byte strides rather than being assumed packed, so permuted views (the
-// common case for attention K/Q/V after reshape+permute, where the
-// permute reorders head/token/batch dims but leaves dim 0 alone) are
-// handled directly without a separate CONT copy.
-//
-// Grid: one block per output element via an explicit 2D dim3 grid
-// (blockIdx.x, blockIdx.y), matching the existing Q4_K/Q6_K MUL_MAT kernels'
-// grid construction exactly (NOT the ggml_cuda8_grid_rows() +
-// grid-stride-loop pattern used by GET_ROWS/softmax/reduce - that pattern
-// requires a per-block loop, which this kernel does not have). total_rows
-// can safely exceed 65535 via grid.y, and an early return is safe here
-// (unlike the stride-loop kernels) because each block is assigned exactly
-// one output element with no per-block loop, so no thread can desync
-// __syncthreads() from a block-mate by returning early.
+// src1 (enforced by the caller in ggml-cuda8-mulmat-f32.cpp). Dims 1-3 take
+// explicit byte strides, so permuted attention views are handled directly.
 #include <cuda_runtime.h>
 #include <cstdio>
 
-static const int GGML_CUDA8_MULMAT_F32_BLOCK_SIZE = 256;
-
-static __device__ void ggml_cuda8_mulmat_f32_reduce_sum(float * partial, int tid) {
-    __syncthreads();
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (tid < s) {
-            partial[tid] += partial[tid + s];
-        }
-        __syncthreads();
-    }
-}
+#define MMF32_WARP 32
+#define MMF32_WARPS_PER_BLOCK 8
+#define MMF32_BLOCK_THREADS (MMF32_WARP * MMF32_WARPS_PER_BLOCK)   // 256
 
 static __global__ void ggml_cuda8_mul_mat_f32_f32_kernel(
     const float * __restrict__ src0,
@@ -55,19 +43,25 @@ static __global__ void ggml_cuda8_mul_mat_f32_f32_kernel(
     int r2, int r3,
     long long total_rows
 ) {
-    const int tid = threadIdx.x;
-    __shared__ float partial[GGML_CUDA8_MULMAT_F32_BLOCK_SIZE];
+    const int tid     = threadIdx.x;
+    const int lane    = tid & (MMF32_WARP - 1);   // 0..31
+    const int warp_id = tid >> 5;                 // 0..7
 
-    const long long idx = (long long) blockIdx.x + (long long) blockIdx.y * gridDim.x;
+    // One warp per output element. block_idx counts blocks (2D grid for the
+    // Fermi 65535 limit); each block owns 8 consecutive output elements.
+    const long long block_idx = (long long) blockIdx.x + (long long) blockIdx.y * gridDim.x;
+    const long long idx = block_idx * MMF32_WARPS_PER_BLOCK + warp_id;
+    // idx is uniform within a warp, so an out-of-range warp returns as a whole
+    // - safe for the warp-synchronous reduction below (no thread desyncs).
     if (idx >= total_rows) {
         return;
     }
+
     long long tmp = idx;
     const int i01 = (int) (tmp % ne01); tmp /= ne01;
     const int i11 = (int) (tmp % ne11); tmp /= ne11;
     const int i12 = (int) (tmp % ne12); tmp /= ne12;
     const int i13 = (int) tmp;
-
     const int i02 = i12 / r2;
     const int i03 = i13 / r3;
 
@@ -80,19 +74,29 @@ static __global__ void ggml_cuda8_mul_mat_f32_f32_kernel(
                                               + (size_t) i12 * nb12
                                               + (size_t) i13 * nb13);
 
+    // The 32 lanes split the reduction dim; consecutive lanes read consecutive
+    // floats (row0[lane], row0[lane+32], ...) -> coalesced within the warp.
     float sum = 0.0f;
-    for (int c = tid; c < ne00; c += GGML_CUDA8_MULMAT_F32_BLOCK_SIZE) {
+    for (int c = lane; c < ne00; c += MMF32_WARP) {
         sum += row0[c] * row1[c];
     }
-    partial[tid] = sum;
-    ggml_cuda8_mulmat_f32_reduce_sum(partial, tid);
 
-    if (tid == 0) {
+    // 32-wide warp-synchronous reduction. Each warp occupies smem[warp_id*32 ..
+    // warp_id*32+31] and reduces only its own 32 slots; warps are independent.
+    __shared__ volatile float smem[MMF32_BLOCK_THREADS];
+    smem[tid] = sum;
+    if (lane < 16) smem[tid] += smem[tid + 16];
+    if (lane <  8) smem[tid] += smem[tid +  8];
+    if (lane <  4) smem[tid] += smem[tid +  4];
+    if (lane <  2) smem[tid] += smem[tid +  2];
+    if (lane <  1) smem[tid] += smem[tid +  1];
+
+    if (lane == 0) {
         float * dst_row =
             (float *) ((char *) dst + (size_t) i11 * nb1
                                      + (size_t) i12 * nb2
                                      + (size_t) i13 * nb3);
-        dst_row[i01] = partial[0];
+        dst_row[i01] = smem[tid];
     }
 }
 
@@ -132,14 +136,14 @@ extern "C" int ggml_cuda8_mul_mat_f32_f32_launch(
         return -1;
     }
 
-    // Explicit 2D grid, matching kernel_mul_mat_q4k_f32 / kernel_mul_mat_q6k_f32
-    // exactly: grid.x carries up to 65535 blocks, grid.y covers the rest.
-    // total_rows is already bounds-checked above to fit safely within
-    // grid.x * grid.y's int32 range for any realistic attention shape.
-    const int total_rows_i = (int) total_rows;
-    dim3 grid(total_rows_i > 65535 ? 65535 : total_rows_i,
-               (total_rows_i + 65534) / 65535);
-    ggml_cuda8_mul_mat_f32_f32_kernel<<<grid, GGML_CUDA8_MULMAT_F32_BLOCK_SIZE>>>(
+    // G58: one warp per output element, 8 warps/block -> ceil(total_rows / 8)
+    // blocks. 2D grid keeps each dim under the Fermi 65535 limit.
+    const long long nblocks =
+        (total_rows + MMF32_WARPS_PER_BLOCK - 1) / MMF32_WARPS_PER_BLOCK;
+    const int gx = (int) (nblocks > 65535 ? 65535 : nblocks);
+    const int gy = (int) ((nblocks + 65534) / 65535);
+    dim3 grid(gx, gy);
+    ggml_cuda8_mul_mat_f32_f32_kernel<<<grid, MMF32_BLOCK_THREADS>>>(
         src0, src1, dst,
         ne00, ne01, ne02, ne03, ne11, ne12, ne13,
         nb01, nb02, nb03,
