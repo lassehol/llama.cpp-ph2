@@ -14,7 +14,25 @@
 #include <cstdlib>
 #include <cstring>
 #include <atomic>
+#include <time.h>
+#include <map>
+#include <string>
+#include <vector>
+#include <algorithm>
 
+static bool cuda8_tmg() { static int e=-1; if(e<0){const char*s=std::getenv("GGML_CUDA8_TIMING"); e=(s&&s[0]&&s[0]!='0')?1:0;} return e==1; }
+static double cuda8_ms(){ struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t); return t.tv_sec*1e3 + t.tv_nsec/1e6; }
+static std::map<std::string,double>& cuda8_opms(){ static std::map<std::string,double> m; return m; }
+static std::map<std::string,long>&   cuda8_opct(){ static std::map<std::string,long> m; return m; }
+static void cuda8_tmg_report(){
+    auto& ms=cuda8_opms(); auto& ct=cuda8_opct(); if(ms.empty())return;
+    std::vector<std::pair<double,std::string>> v; double tot=0;
+    for(auto&kv:ms){ v.push_back({kv.second,kv.first}); tot+=kv.second; }
+    std::sort(v.rbegin(),v.rend());
+    std::fprintf(stderr,"\nggml-cuda8 TIMING: total %.1f ms\n",tot);
+    for(auto&p:v) std::fprintf(stderr,"  %9.1f ms  %8ld calls  %8.4f ms/call  %s\n",
+        p.first, ct[p.second], p.first/ct[p.second], p.second.c_str());
+}
 // This TU calls the CUDA runtime directly (cudaDeviceSynchronize et al) and does
 // not get cuda_runtime.h transitively: the ggml-cuda8-*.h chain reaches only
 // ggml-cuda8-context.h / -backend.h, neither of which includes it.
@@ -482,13 +500,17 @@ static enum ggml_status cuda8_backend_graph_compute(ggml_backend_t backend, stru
                 return (enum ggml_status) -1;
         }
         std::printf("ggml-cuda8/backend: graph_compute node %d %s\n", i, opname);
+        const bool _tmg = cuda8_tmg(); double _t0=0;
+        if(_tmg){ cudaDeviceSynchronize(); _t0=cuda8_ms(); }
         if (ggml_cuda8_ggml_backend_dispatch_op(backend, ctx, cuda8_op, dispatch_src0, dispatch_src1, dispatch_dst) != 0) {
             std::fprintf(stderr, "ggml-cuda8/backend graph_compute: dispatch failed at node %d op=%s\n", i, opname);
             ggml_cuda8_context_destroy(ctx);
             return (enum ggml_status) -1;
         }
+		if(_tmg){ cudaDeviceSynchronize(); cuda8_opms()[opname]+=cuda8_ms()-_t0; cuda8_opct()[opname]++; }
     }
     ggml_cuda8_context_destroy(ctx);
+		if(cuda8_tmg()){ static bool r=false; if(!r){ std::atexit(cuda8_tmg_report); r=true; } }
     std::printf("ggml-cuda8/backend: graph_compute SUCCESS\n");
     return GGML_STATUS_SUCCESS;
 }
