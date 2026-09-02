@@ -311,7 +311,6 @@ static bool ggml_backend_cuda8_device_supports_op_impl(const struct ggml_tensor 
 
         // rotary positional embeddings: NORMAL (0) and NEOX (2)
         case GGML_OP_ROPE: {
-			//return false; // TEMP BISECT G42-debug
             if (op->type != GGML_TYPE_F32) return false;
             if (!op->src[0] || op->src[0]->type != GGML_TYPE_F32) return false;
             if (!op->src[1] || op->src[1]->type != GGML_TYPE_I32) return false;
