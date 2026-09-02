@@ -106,66 +106,42 @@ __global__ void kernel_get_rows_q4k(
 // Block: (256, 1)
 // =====================================================================
 __global__ void kernel_mul_mat_q4k_f32(
-        const void  * __restrict__ src0,
-        const float * __restrict__ src1,
-        float       * __restrict__ dst,
-        const int ne00,
-        const int ne01,
-        const int ne11,
-        const int nb01,
-        const int nb11) {
-
-    // 2D grid for Fermi (max grid.x=65535)
+        const void * __restrict__ src0, const float * __restrict__ src1, float * __restrict__ dst,
+        const int ne00, const int ne01, const int ne11, const int nb01, const int nb11) {
     const int idx = blockIdx.x + blockIdx.y * gridDim.x;
     if (idx >= ne01 * ne11) return;
     const int row = idx % ne01;
     const int col = idx / ne01;
-    const int tid = threadIdx.x;
+    const int tid = threadIdx.x;            // 0..255
     const int nb  = ne00 / QK_K;
+    const block_q4_K * src0_row = (const block_q4_K *)((const char *)src0 + (size_t)row * nb01);
+    const float * src1_col = (const float *)((const char *)src1 + (size_t)col * nb11);
 
-    const block_q4_K * src0_row =
-        (const block_q4_K *)((const char *)src0 + (size_t)row * nb01);
-    const float * src1_col =
-        (const float *)((const char *)src1 + (size_t)col * nb11);
+    // G59: every thread handles ONE of the 256 values in each block.
+    // tid = j*32 + l   (j = sub-block 0..7, l = position 0..31)
+    const int j = tid >> 5;          // tid / 32  -> 0..7
+    const int l = tid & 31;          // tid % 32  -> 0..31
+    const int g = j >> 1;            // j / 2
+    const int is_high = j & 1;
 
     float sum = 0.0f;
-
-    for (int b = tid; b < nb; b += blockDim.x) {
+    for (int b = 0; b < nb; b++) {                        // ← ALL 256 threads, every block
         const block_q4_K * blk = &src0_row[b];
         const float d    = fp16_to_f32(blk->d);
         const float dmin = fp16_to_f32(blk->dmin);
-        const float * s1 = src1_col + b * QK_K;
-
-        for (int j = 0; j < 8; j++) {
-            uint8_t sc, mn;
-            get_scale_min_k4(j, blk->scales, sc, mn);
-            const float scale = d * (float)sc;
-            const float min   = dmin * (float)mn;
-            const int g = j / 2;
-            const int is_high = j & 1;
-
-            float sub_dot = 0.0f;
-            float sub_sum = 0.0f;
-
-            for (int l = 0; l < 32; l++) {
-                uint8_t qbyte = blk->qs[g * 32 + l];
-                uint8_t q = is_high ? (qbyte >> 4) : (qbyte & 0xF);
-                float fval = s1[j * 32 + l];
-                sub_dot += (float)q * fval;
-                sub_sum += fval;
-            }
-
-            sum += scale * sub_dot - min * sub_sum;
-        }
+        uint8_t sc, mn;
+        get_scale_min_k4(j, blk->scales, sc, mn);
+        const float scale = d * (float) sc;
+        const float mmin  = dmin * (float) mn;
+        const uint8_t qbyte = blk->qs[g * 32 + l];
+        const uint8_t q = is_high ? (qbyte >> 4) : (qbyte & 0xF);
+        const float w = scale * (float) q - mmin;
+        sum += w * src1_col[b * QK_K + j * 32 + l];
     }
-
     __shared__ float smem[256];
     smem[tid] = sum;
     block_reduce_sum_inplace(smem, tid);
-
-    if (tid == 0) {
-        dst[col * ne01 + row] = smem[0]; // ggml dst: (row,col) at row + col*ne01
-    }
+    if (tid == 0) dst[col * ne01 + row] = smem[0];
 }
 
 // =====================================================================
