@@ -26,6 +26,7 @@
 #include <cmath>
 #include <cstdint>
 #include <vector>
+#include <time.h>
 
 // ---- Q4_K block layout: MUST match ggml-cuda8-q4k.cu exactly ----------------
 #define QK_K 256
