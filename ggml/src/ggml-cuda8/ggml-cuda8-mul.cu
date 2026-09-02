@@ -97,15 +97,3 @@ extern "C" int ggml_cuda8_mul_broadcast_f32_launch(
     }
     return 0;
 }
-
-    const int block = 256;
-    const int grid  = ggml_cuda8_grid_1d(n_total, block);
-
-    kernel_mul_broadcast_f32<<<grid, block>>>(a, b, c, n_total, n_repeat);
-
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) return -1;
-    err = cudaDeviceSynchronize();
-    if (err != cudaSuccess) return -1;
-    return 0;
-}
