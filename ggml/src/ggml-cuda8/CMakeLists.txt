@@ -210,6 +210,11 @@ target_link_libraries(ggml-cuda8-q8_0-bench
     ggml-cuda8-kernels
     ${CUDA_LIBRARIES}
 )
+
+cuda_add_executable(ggml-cuda8-q4k-bench ggml-cuda8-q4k-bench.cpp)
+target_link_libraries(ggml-cuda8-q4k-bench ggml-cuda8-kernels ${CUDA_LIBRARIES})
+set_target_properties(ggml-cuda8-q4k-bench PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
 # ---------------------------------------------------------------------------
 # G0 GGML-shaped smoke executable:
 #   Q8_0 matrix [rows, cols] x F32 vector [cols] -> F32 vector [rows]
