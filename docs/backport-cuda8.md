@@ -502,3 +502,114 @@ landed. The checkpoint results it builds on are the author's own, verified on ha
 recurring lesson of the G39–G56 arc, proven repeatedly: do not optimize or conclude from
 assumption. Every performance hypothesis — split boundaries, host staging, per-op sync, register
 spills, bandwidth ceiling — was measured, and all but one were false. Follow the number._
+
+
+
+### G57 status: warp-per-row K-quant MUL_MAT — GTX 560 overtakes the CPU
+
+Status: **DONE, verified on GTX 560 with a real model.** Generation went from
+5.1 tok/s (G56) to **14.3 tok/s** on Qwen3-0.6B-Q4_K_M — the 2011 Fermi card
+is now **2.4× faster than the host's Phenom II X6 1055T** (~6 tok/s), from a 7×
+deficit at the start of the optimization arc. Cumulative from the original naive
+kernel: **0.8 → 14.3 tok/s (18×) on generation, 1.2 → 18.1 tok/s (15×) on prompt.**
+
+This checkpoint extends the G56 correction. G55 called the perf ceiling
+"bandwidth-underutilized, near hardware ceiling"; G56 corrected that to "thread
+underutilization, 0.24% of bandwidth." G57 goes further: even after G56's
+utilization fix, the matvec was still only ~2% of peak — because the **256-wide
+`__syncthreads` reduction dwarfed the compute**. The card was never
+bandwidth-bound; it was reduction/latency-bound.
+
+#### The diagnosis (measured, via the microbenches)
+
+After G56, the q4k-bench showed matvec at ~2.3 GB/s — 1.7% of the 129 GB/s
+peak, a 58× gap that memory bandwidth could not explain. The G56 kernel was
+one-block-per-output-row, 256 threads, each doing only `nb` values (4 at
+ne00=1024), followed by an 8-step, `__syncthreads`-heavy, 256-wide tree
+reduction. For nb=4 the block spent more time reducing than computing, and each
+block read only ~576 bytes before stalling on the reduction — the memory
+pipeline never filled.
+
+#### The fix: warp-per-row
+
+Restructured to fit the GF114 (7 SMs, 32-thread warps, **no `__shfl`** — that is
+sm_30+, so reductions stay in shared memory; 32768 reg/SM):
+- **One warp (32 threads) per output row, 8 warps (256 threads) per block → 8
+  rows per block.** grid = `(ceil(ne01/8), ne11)`.
+- Each thread does **8 values per superblock** (Q4_K: the `j = 0..7` loop at
+  `lane = l`; Q6_K: 2 halves × 4 quadrants at `lane = l`) instead of 1 — 8× more
+  compute per thread, amortizing the reduction.
+- **32-wide warp-synchronous reduction** — `volatile` shared memory, no
+  `__syncthreads` within a warp (valid on Fermi's lockstep warps) — replaces the
+  256-wide `__syncthreads` tree. Each warp reduces only its own 32 slots.
+- **`__launch_bounds__(256, 2)` dropped from Q6_K** — it had capped occupancy at
+  2 blocks/SM (a G55-diagnosed limiter); the scheduler now picks freely.
+
+Same total arithmetic per row, identical dequant math (bench-proven at G56), just
+redistributed to fill the memory pipeline and gut the reduction cost.
+
+#### Results
+
+Microbench (matvec, ne11=1), G56 → G57:
+
+    Q4_K  ne00=1024:  2.31 -> 9.80 GB/s   (4.2x, 0.255 -> 0.060 ms/call)
+    Q4_K  ne00=2048:  3.12 -> 11.43 GB/s  (3.7x)
+    Q6_K  ne00=1024:  2.61 -> 18.32 GB/s  (7.0x, 0.047 ms/call)
+    Q6_K  ne00=2048:  3.26 -> 21.46 GB/s  (6.6x)
+
+Q6_K ended up **faster than Q4_K** per GB/s (21 vs 11) and the old 3.25×
+Q6_K-slower gap is erased — the denser format reads more bytes per value, so each
+warp does more memory work before reducing, giving higher memory-level
+parallelism. The warp structure suits Q6_K even better than Q4_K.
+
+Prefill (ne11=32) also improved ~4-8× for free (each column runs the efficient
+warp kernel): Q4_K 0.07 → 0.34 GB/s, Q6_K 0.08 → 0.65 GB/s. It remains the slow
+path (weights re-streamed per column — Increment 2 territory), just less slow.
+
+Real model (Qwen3-0.6B-Q4_K_M, -ngl 99, GPU-resident):
+
+    Generation:  5.1 -> 14.3 tok/s   (2.8x over G56, 2.4x the CPU's ~6)
+    Prompt:      7.4 -> 18.1 tok/s
+
+Slightly exceeded the matvec-only projection (est. 9-12) because Q6_K's outsized
+gain and the free prefill speedup both contributed.
+
+#### Correctness
+
+Both kernels' dequant math is unchanged from the bench-proven G56/G60 versions —
+only the thread mapping and reduction changed, so the warp enumeration computes
+exactly the same multiset of (weight × activation) products. The microbenches
+(independent CPU reference, exact-value-family with scaled tolerance) pass all
+shapes `OK`; the full 27-target regression is green; real-model output coherent.
+
+`max_err` rose slightly (1e-4 → up to 3e-4) — expected and benign: the warp
+reduction accumulates in a different order than the 256-wide tree, so
+floating-point associativity gives marginally different rounding. Well within the
+scaled `abs_tol`; not a correctness change.
+
+#### Where the headroom is now
+
+18-21 GB/s is ~14-16% of the 129 GB/s peak — up from 0.24% at the arc's start,
+still ~6-7× from theoretical peak. Remaining measured levers, in rough value
+order:
+- **Vectorized loads (Increment B).** Each thread reads one `uint8` at a time;
+  a `uint32` load (4 nibbles) + in-register unpack would cut memory transactions
+  ~4×. The next clear lever.
+- **Weight reuse across columns (Increment 2).** Prefill still re-streams the
+  weight matrix per output column; helps prompt more than generation.
+- **Occupancy.** With `__launch_bounds__` gone, a ptxas check on the new kernels
+  would show whether register pressure limits blocks/SM.
+
+Each is a bigger/riskier change with smaller marginal payoff than the wins
+already banked — optional, scoped by the microbenches, not guessed.
+
+#### The bottom line
+
+The GTX 560 was never near a hardware ceiling. Across G56 and G57 the two K-quant
+matmuls went from 0.24% to ~15% of the card's bandwidth — a >60× improvement in
+effective throughput — taking generation from 0.8 to 14.3 tok/s (18×) and turning
+a 7× GPU deceleration into a 2.4× GPU win over a period-contemporary 6-core CPU.
+The project's headline goal — a real LLM running usefully on 2011 Fermi silicon —
+is not just met but exceeded. Every step was measured (timing probe → microbench),
+changed in one contained increment, verified against an independent reference
+before touching the model, and confirmed by full regression. Follow the number.
