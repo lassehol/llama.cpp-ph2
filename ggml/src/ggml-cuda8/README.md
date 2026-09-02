@@ -2746,6 +2746,122 @@ cluster work) and enabling models too large for CPU RAM, not beating CPU on a
 project with measured headroom, filed rather than pursued.
 
 
+### G56 status: K-quant MUL_MAT thread-utilization rewrite — GPU reaches CPU parity
+
+Status: **DONE, verified on GTX 560 with a real model.** Generation went from
+0.8 tok/s to **5.1 tok/s (6.4x)** on Qwen3-0.6B-Q4_K_M via two contained,
+correctness-gated kernel changes. The GPU path went from a 7x DECELERATION
+vs CPU to essentially CPU PARITY (5.1 vs ~6 tok/s on a Phenom II X6 1055T).
+
+This checkpoint corrects the pessimistic conclusion recorded at G55, which
+called the perf ceiling "bandwidth-underutilized, high-effort, uncertain
+payoff." That was wrong. The real problem was gross thread
+underutilization, and it was fixable mechanically for a 6.4x gain.
+
+#### The diagnosis (measured, not assumed)
+
+A per-op GPU timing probe (G55) showed 97% of GPU time in the two K-quant
+WEIGHT matmuls: MUL_MAT_Q4_K at 5.49 ms/call and MUL_MAT_Q6_K at 17.83
+ms/call. A new correctness-checked microbenchmark (ggml-cuda8-q4k-bench.cpp)
+then quantified WHY:
+
+    ne00=1024 matvec:  1.90 ms/call,  0.31 GB/s  (of 129 GB/s peak = 0.24%)
+    ne11=32 prefill:  59.60 ms/call,  0.01 GB/s
+
+0.24% of bandwidth. The kernel ran at ~1/400th of the card's capability. The
+cause, confirmed against the kernel source: each of 256 threads/block was
+assigned a WHOLE 256-value Q4_K block, so only nb = ne00/256 threads were
+active - **4 threads at ne00=1024, 252 idle**. The rest launched, sat idle
+through the compute loop, then reduced zeros. Not register spilling (ptxas
+confirmed 0 spills at G55) - pure work-distribution failure.
+
+The bench also exposed a SECOND problem: prefill (ne11>1) re-reads the entire
+weight matrix once per output column (59.6 ms at ne11=32 is ~32x the matvec).
+That is Increment 2 (weight reuse), not addressed here.
+
+#### The fix (Increment 1: thread utilization)
+
+Same grid, same shared-memory reduction, same G53 dst layout. Only the
+inner parallelization changed: instead of one-thread-per-block, all 256
+threads split each block's 256 values, one value per thread.
+
+Q4_K mapping (ggml-cuda8-q4k.cu): tid = j*32 + l enumerates all 256
+(j in 0..7, l in 0..31) values of each block, one per thread - the identical
+multiset of (weight * activation) products the old serial loop computed,
+just distributed across 256 threads.
+
+Q6_K mapping (ggml-cuda8-q6k.cu): trickier, because Q6_K assembles each
+6-bit value from ql (low 4 bits) + qh (high 2 bits) across two 128-value
+halves with 4 quadrants per l. Decode tid -> (half, l, k) where
+2*32*4 = 256 exactly, and a switch(k) reproduces the serial q1/q2/q3/q4
+cases verbatim (same ql index, qh shift, scale offset, activation offset).
+
+Both are correct by construction: the thread enumeration covers exactly the
+same set of terms as the serial version. Verified numerically by the
+microbenches and the full regression.
+
+#### Results
+
+Microbench (Q4_K), before -> after Increment 1:
+    ne00=1024 matvec:  0.31 -> 2.31 GB/s   (7.4x, 1.90 -> 0.255 ms/call)
+    ne00=3072 matvec:  0.33 -> 3.43 GB/s   (10.3x - most idle threads reclaimed)
+    ne11=32 prefill:   0.01 -> 0.07 GB/s   (7.4x)
+
+Real model (Qwen3-0.6B-Q4_K_M, -ngl 99, GPU-resident attention), cumulative
+over both kernels:
+    MUL_MAT_Q4_K:  5.49 -> 0.71 ms/call   (7.8x)
+    MUL_MAT_Q6_K: 17.83 -> 2.38 ms/call   (7.5x)
+    total GPU:    1490  -> 241 ms/graph   (6.2x)
+    Generation:    0.8  -> 5.1 tok/s      (6.4x)
+    Prompt:        1.2  -> 7.4 tok/s      (6.2x)
+
+The profile is now balanced: the three matmul families (Q4_K 0.71, Q6_K 2.38,
+F32-attention 0.82 ms/call) are within ~3x of each other, no single dominant
+hotspot. The old 62%/35% Q4/Q6 tyranny is gone.
+
+#### Regression guards
+
+- ggml-cuda8-q4k-bench.cpp and ggml-cuda8-q6k-bench.cpp: standalone,
+  correctness-checked (independent CPU reference, ggml dst layout) + GB/s
+  reporting. Every kernel change re-runs these in seconds - OK + rising GB/s
+  means a win, BAD means stop. These are what make further optimization
+  safe.
+- Full 26-target regression: green with both rewritten kernels (the
+  graph-builder Q4_K/Q6_K smokes are the real-model net).
+- Real model: coherent output confirmed after each kernel change.
+
+#### Honest position, corrected from G55
+
+The GPU is now at CPU parity, not a 7x deficit. But 2.3 GB/s (Q4_K matvec)
+is still only ~2% of the 129 GB/s peak - there IS large remaining headroom,
+now genuinely attributable to:
+- **Increment 2 (weight reuse across columns)** - prefill still re-streams
+  weights per column; helps prompt phase.
+- **Occupancy** - Q6_K's 34 reg + __launch_bounds__(256,2) caps it at 2-3
+  blocks/SM vs Q4_K's ~5; the 3.25x Q6_K/Q4_K gap that survived Increment 1
+  (2.38 vs 0.71 ms) is occupancy, not utilization.
+- **Vectorized/coalesced loads** - fp16_to_f32 per value, byte-wise qs
+  reads; float4 loads and shared-mem staging would raise bandwidth further.
+
+These are real, with measured headroom, but each is a bigger/riskier change
+with smaller marginal payoff than the two ~7x wins already banked. The
+period-fair framing stands (2011 Fermi vs 2010 Phenom II), but the earlier
+"near hardware ceiling" claim is retracted: the card was running at 0.24% of
+bandwidth, not near any ceiling. The G56 rewrite captured the largest, safest
+part of that gap; the rest is optional future work, now correctly scoped by
+the microbenches rather than guessed at.
+
+#### Method note
+
+Every step of this optimization was diagnosed by measurement (timing probe ->
+microbench -> ptxas), changed in one contained increment, verified against an
+independent reference before touching the model, and confirmed by full
+regression. No performance hypothesis survived without a number behind it -
+the "bandwidth-bound ceiling" and "per-op sync" and "register spill"
+hypotheses were each measured and falsified. The surviving explanation -
+thread underutilization - is the measured truth, and the 6.4x is its receipt.
+
+
 
 
 
