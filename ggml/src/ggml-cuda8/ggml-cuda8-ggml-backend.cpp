@@ -344,7 +344,7 @@ static enum ggml_status cuda8_backend_graph_compute(ggml_backend_t backend, stru
                     dispatch_dst  = node;
                     cuda8_op = GGML_CUDA8_OP_MUL_MAT_F16_F32;
                     opname = "MUL_MAT_F16xF32";
-                } else {
+
                 } else {
                     std::fprintf(stderr, "ggml-cuda8/backend graph_compute: MUL_MAT node %d unsupported src0 type %d\n", i, (int)src0->type);
                     ggml_cuda8_context_destroy(ctx);
