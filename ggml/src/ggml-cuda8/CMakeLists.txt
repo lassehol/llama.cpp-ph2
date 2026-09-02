@@ -1376,3 +1376,8 @@ cuda_add_executable(ggml-cuda8-mulmat-f16-smoke
 target_link_libraries(ggml-cuda8-mulmat-f16-smoke ${CUDA_LIBRARIES})
 set_target_properties(ggml-cuda8-mulmat-f16-smoke PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+cuda_add_executable(ggml-cuda8-zerobatch-smoke
+    ggml-cuda8-zerobatch-smoke.cu)
+target_link_libraries(ggml-cuda8-zerobatch-smoke ggml-cuda8-kernels ${CUDA_LIBRARIES})
+set_target_properties(ggml-cuda8-zerobatch-smoke PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
