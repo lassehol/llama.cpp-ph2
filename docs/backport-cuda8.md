@@ -755,3 +755,113 @@ larger context), not more kernel tuning. Every step of the G56-G58 arc was
 diagnosed by measurement, changed in one contained increment, verified against
 an independent reference before touching the model, and confirmed by full
 regression. Follow the number.
+
+G49 UPDATE — records F16 KV-cache storage: 6.5x context (512 -> 3328), +6%
+generation, no tradeoff. Fold into the canonical backport-cuda8.md. These are
+the specific edits to the consolidated document.
+
+---
+
+EDIT 1 — section "### 2.2 Attention", the F16 KV cache bullet. It currently
+reads:
+
+    - KV cache defaults to F16. Fermi has no fp16 _arithmetic_. **Workaround
+      until G49:** `--cache-type-k f32 --cache-type-v f32`. Costs 2x KV
+      memory ... F16 _conversion_ is confirmed working on sm_21 (section 7),
+      so an F16 cache with F32 compute is reachable.
+
+Replace with:
+
+    - KV cache defaults to F16. Fermi has no fp16 _arithmetic_, but F16
+      _conversion_ is single-instruction at sm_21 (section 7). **DONE (G49,
+      section 14):** the cache is stored F16 and computed F32. This removed
+      the `-c 512` cap (see section 4) - context now reaches `-c 3328` on the
+      1 GB card - and generation actually rose (+6%), because the F16-read
+      attention matmul moves half the bytes. `--cache-type-k/v f16` is the
+      default-quality path; `--cache-type f32 -c 512` remains the
+      high-precision fallback.
+
+---
+
+EDIT 2 — section "### 4. What will actually fit in 1 GB", the closing
+paragraph about the F32-cache VRAM wrinkle. It currently reads:
+
+    Note one practical wrinkle discovered at G55: with the KV cache
+    device-resident (required for GPU attention), the full-context F32 cache
+    is ~896 MiB and does not fit alongside Q4_K weights. Cap context with
+    `-c 512` (cache ~11 MiB) until G49 lands an F16 cache.
+
+Replace with:
+
+    A wrinkle discovered at G55 - the full-context F32 cache is ~896 MiB and
+    does not fit alongside Q4_K weights - forced `-c 512` until G49. **G49
+    (section 14) removed it:** the F16 cache halves that traffic, and the VRAM
+    envelope was bisected exactly at `-c 3328` on the 1 GB card (`-c 3330`
+    OOMs on KV allocation) - 6.5x the old cap. That 3328 accounts for the
+    whole usable budget: ~372 MiB Q4_K weights + ~306 MiB compute buffer + the
+    F16 KV cache filling the remainder of ~963 MiB.
+
+---
+
+EDIT 3 — section "### 5. Roadmap", the G49 table row. It currently reads:
+
+| **G49** | F16 _storage_ support (convert on load, compute in F32) | Removes the --cache-type f32 workaround and the -c 512 cap; handles F16 token_embd/output. **Unblocked** - conversion verified on sm_21, section 7. |
+
+Replace with:
+
+| ~~**G49**~~ | ~~F16 storage support (convert on load, compute in F32)~~ | **DONE - 512 -> 3328 context (6.5x), +6% generation.** F16 KV cache stored/converted, computed F32. Section 14. (F16 token_embd/output not needed - the DEBUG_OPS check showed those already on GPU as quantized types.) |
+
+---
+
+EDIT 4 — new top-level section at the end, after section 13 (G56) and before
+the closing italic attribution:
+
+---
+
+### 14. G49: F16 KV-cache storage — context ceiling lifted 6.5x
+
+**Result.** The KV cache can be stored F16 (`--cache-type-k/v f16`), removing
+the `-c 512` cap the F32 cache forced since G55. Measured ceiling on the 1 GB
+GTX 560: **`-c 3328`** (bisected: 3328 loads, 3330 OOMs), 6.5x the old 512.
+Generation _rose_ 23.4 -> 24.9 tok/s and output stayed coherent - bigger
+context AND faster, not a tradeoff.
+
+**Mechanism: convert, don't compute.** Fermi has no fp16 arithmetic, but
+`__float2half`/`__half2float` are single `cvt` instructions at sm_21 (section
+7). The cache is stored F16 (half the bytes) with all compute in F32.
+
+**Two new kernels, F32 paths untouched.** (1) An F16 SET_ROWS write variant
+(store converts via `__float2half`); (2) an F16-src0 attention matmul in a
+SEPARATE file from the G58 F32 hot path, identical warp-per-element structure
+with a per-element `__half2float` in the dot loop. Both bench-proven in
+isolation (ggml-cuda8-set-rows-f16-smoke, ggml-cuda8-mulmat-f16-smoke) before
+any wiring.
+
+**The bench result that reframed it.** The F16-read attention matmul was
+expected slower (a convert in the hot loop); it measured _faster_ - 0.061 vs
+0.13 ms/call at head_dim=128 - because the single-instruction convert costs
+nothing while halving memory traffic on a bandwidth-bound matmul. F16 storage
+is a pure win.
+
+**Coherent gate flip.** An F16 cache needs BOTH the F16 SET_ROWS write AND the
+F16-read attention matmul, or the graph splits back to CPU - the F32-only
+barrier (SET_ROWS-F32 + MUL_MAT-F32) was a matched pair. Two new dispatch op
+ids (`SET_ROWS_F16`, `MUL_MAT_F16_F32`), their supported_/exec_ helpers, and
+supports_op / graph_compute routing were flipped together in one increment,
+gated on tensor type. Zero refusals logged in the model run - the whole graph
+stays GPU-resident with the F16 cache.
+
+**Precision.** F16 KV cache is a genuine ~10-bit-mantissa reduction, held
+coherent here, and is llama.cpp's modern default. `--cache-type f32 -c 512`
+remains the high-precision fallback.
+
+**The complete arc.** Generation 0.8 -> 24.9 tok/s (31x); GPU from 7x slower
+to 4.2x faster than the Phenom II X6 1055T; context 512 -> 3328 (6.5x). Every
+optimization measured, contained, independently verified, regression-guarded.
+The card's full usable envelope is now characterized: no cheap kernel win
+remains (all matmuls at the ~21 GB/s memory-pattern ceiling), and the only
+further levers are structural (weight-reuse for prefill throughput, which does
+not help generation). The project's goal - a real LLM running usefully on 2011
+Fermi silicon - is met and substantially exceeded.
+
+---

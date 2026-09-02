@@ -36,7 +36,9 @@ extern "C" int ggml_cuda8_op_get_rows_f32(
         int n_tokens) {
 
     if (src0 == NULL || src1 == NULL || dst == NULL || ne00 <= 0 || n_tokens <= 0) {
-        std::fprintf(stderr, "ggml-cuda8/getrows: invalid args\n");
+        std::fprintf(stderr, "ggml-cuda8/getrows: invalid args "
+            "(src0=%p src1=%p dst=%p ne00=%d n_tokens=%d)\n",
+            (void*)src0, (void*)src1, (void*)dst, ne00, n_tokens);
         return -1;
     }
 
