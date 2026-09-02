@@ -126,13 +126,21 @@ extern "C" int ggml_cuda8_op_set_rows_f32(
         size_t nb10, size_t nb11, size_t nb12,
         size_t nb1,  size_t nb2,  size_t nb3) {
     if (src0 == NULL || idx == NULL || dst == NULL ||
-        nc <= 0 || nr <= 0 || ne02 <= 0 || ne03 <= 0) {
+        nc <= 0 || nr < 0 || ne02 < 0 || ne03 < 0) {
         std::fprintf(stderr, "ggml-cuda8/set_rows: invalid args nc=%d nr=%d\n", nc, nr);
         return -1;
     }
+    // ne11/ne12 gate a modulo (i11 = i02 % ne11) inside the kernel - a zero
+    // here would be undefined behavior in-kernel, not a valid no-op, so this
+    // guard MUST stay strict regardless of batch size.
     if (ne11 <= 0 || ne12 <= 0) {
         std::fprintf(stderr, "ggml-cuda8/set_rows: bad idx dims ne11=%d ne12=%d\n", ne11, ne12);
         return -1;
+    }
+    // nr/ne02/ne03 == 0: a zero-sized sub-batch (e.g. no rows to scatter for
+    // this graph fragment) - not an error, nothing to write.
+    if (nr == 0 || ne02 == 0 || ne03 == 0) {
+        return 0;
     }
     const int total = nc * nr * ne02 * ne03;
     const int block = 256;
