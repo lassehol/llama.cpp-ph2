@@ -1314,6 +1314,13 @@ target_link_libraries(ggml-cuda8-oversized-smoke
     ggml-cuda8-kernels
     ${CUDA_LIBRARIES}
 )
+
+cuda_add_executable(ggml-cuda8-cont-smoke
+    ggml-cuda8-cont-smoke.cu
+    ggml-cuda8-cont.cu)
+target_link_libraries(ggml-cuda8-cont-smoke ${CUDA_LIBRARIES})
+set_target_properties(ggml-cuda8-cont-smoke PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
 set_target_properties(ggml-cuda8-oversized-smoke PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 # -- G-fix: poison-flag fatal-error-injection smoke ---------------------------
