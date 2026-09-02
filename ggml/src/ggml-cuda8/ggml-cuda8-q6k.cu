@@ -96,69 +96,55 @@ __global__ void kernel_get_rows_q6k(
 // MUL_MAT Q6_K x F32 -> F32
 // =====================================================================
 __global__ void __launch_bounds__(256, 2) kernel_mul_mat_q6k_f32(
-        const void  * __restrict__ src0,
-        const float * __restrict__ src1,
-        float       * __restrict__ dst,
-        const int ne00,
-        const int ne01,
-        const int ne11,
-        const int nb01,
-        const int nb11) {
-
-    // 2D grid for Fermi (max grid.x=65535)
+        const void * __restrict__ src0, const float * __restrict__ src1, float * __restrict__ dst,
+        const int ne00, const int ne01, const int ne11, const int nb01, const int nb11) {
     const int idx = blockIdx.x + blockIdx.y * gridDim.x;
     if (idx >= ne01 * ne11) return;
     const int row = idx % ne01;
     const int col = idx / ne01;
-    const int tid = threadIdx.x;
+    const int tid = threadIdx.x;            // 0..255
     const int nb  = ne00 / QK_K;
+    const block_q6_K * src0_row = (const block_q6_K *)((const char *)src0 + (size_t)row * nb01);
+    const float * src1_col = (const float *)((const char *)src1 + (size_t)col * nb11);
 
-    const block_q6_K * src0_row =
-        (const block_q6_K *)((const char *)src0 + (size_t)row * nb01);
-    const float * src1_col =
-        (const float *)((const char *)src1 + (size_t)col * nb11);
+    // G60: decode tid -> (half, l, k), the same (half,l,q1..q4) enumeration
+    // the serial loop used, one term per thread. 2*32*4 = 256 exactly.
+    const int half = tid >> 7;              // tid / 128 -> 0..1
+    const int rem  = tid & 127;             // 0..127
+    const int l    = rem >> 2;              // 0..31
+    const int k    = rem & 3;               // 0..3  (which of q1..q4)
+    const int is   = l >> 4;                // 0..1
 
     float sum = 0.0f;
-
-    for (int b = tid; b < nb; b += blockDim.x) {
+    for (int b = 0; b < nb; b++) {                        // ALL 256 threads, every block
         const block_q6_K * blk = &src0_row[b];
         const float d = fp16_to_f32(blk->d);
-        const float * s1 = src1_col + b * QK_K;
+        const uint8_t * ql = blk->ql + half*64;
+        const uint8_t * qh = blk->qh + half*32;
+        const int8_t  * sc = blk->scales + half*8;
+        const float   * s1h = src1_col + b*QK_K + half*128;
 
-        // Process 2 halves of 128 values
-        for (int half = 0; half < 2; half++) {
-            const uint8_t * ql = blk->ql + half * 64;
-            const uint8_t * qh = blk->qh + half * 32;
-            const int8_t  * sc = blk->scales + half * 8;
-            const float * s1h = s1 + half * 128;
-
-            // Q6_K dequant matching ggml reference (interleaved layout)
-            // For l in 0..31:
-            //   q1: ql[l] low nibble  + qh[l] bits 0-1 -> output[l+ 0], scale[l/16+0]
-            //   q2: ql[l+32] low nib  + qh[l] bits 2-3 -> output[l+32], scale[l/16+2]
-            //   q3: ql[l] high nibble + qh[l] bits 4-5 -> output[l+64], scale[l/16+4]
-            //   q4: ql[l+32] high nib + qh[l] bits 6-7 -> output[l+96], scale[l/16+6]
-            for (int l = 0; l < 32; l++) {
-                int is = l / 16;
-                int8_t q1 = (int8_t)((ql[l]    & 0xF) | (((qh[l] >> 0) & 3) << 4)) - 32;
-                int8_t q2 = (int8_t)((ql[l+32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) - 32;
-                int8_t q3 = (int8_t)((ql[l]    >> 4)  | (((qh[l] >> 4) & 3) << 4)) - 32;
-                int8_t q4 = (int8_t)((ql[l+32] >> 4)  | (((qh[l] >> 6) & 3) << 4)) - 32;
-                sum += d * (float)sc[is+0] * (float)q1 * s1h[l+ 0];
-                sum += d * (float)sc[is+2] * (float)q2 * s1h[l+32];
-                sum += d * (float)sc[is+4] * (float)q3 * s1h[l+64];
-                sum += d * (float)sc[is+6] * (float)q4 * s1h[l+96];
-            }
+        // k selects the quadrant exactly as q1..q4 in the serial version:
+        //  k=0: ql[l]   low , qh bits 0-1, scale is+0, s1h[l+ 0]
+        //  k=1: ql[l+32]low , qh bits 2-3, scale is+2, s1h[l+32]
+        //  k=2: ql[l]   high, qh bits 4-5, scale is+4, s1h[l+64]
+        //  k=3: ql[l+32]high, qh bits 6-7, scale is+6, s1h[l+96]
+        int ql_idx, sh, sc_off, s_off;
+        bool high;
+        switch (k) {
+            case 0: ql_idx = l;      sh = 0; sc_off = 0; s_off =  0; high = false; break;
+            case 1: ql_idx = l + 32; sh = 2; sc_off = 2; s_off = 32; high = false; break;
+            case 2: ql_idx = l;      sh = 4; sc_off = 4; s_off = 64; high = true;  break;
+            default:ql_idx = l + 32; sh = 6; sc_off = 6; s_off = 96; high = true;  break;
         }
+        const uint8_t qlv = high ? (ql[ql_idx] >> 4) : (ql[ql_idx] & 0xF);
+        const int8_t  q   = (int8_t)(qlv | (((qh[l] >> sh) & 3) << 4)) - 32;
+        sum += d * (float) sc[is + sc_off] * (float) q * s1h[l + s_off];
     }
-
     __shared__ float smem[256];
     smem[tid] = sum;
     block_reduce_sum_inplace_q6(smem, tid);
-
-    if (tid == 0) {
-        dst[col * ne01 + row] = smem[0];
-    }
+    if (tid == 0) dst[col * ne01 + row] = smem[0];
 }
 
 // =====================================================================
