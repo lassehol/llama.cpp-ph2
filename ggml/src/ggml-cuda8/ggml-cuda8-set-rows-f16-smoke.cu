@@ -17,7 +17,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
-#include <cstdint>
+#include <stdint.h>
 #include <vector>
 
 // Launcher under test (extern "C" in the kernels archive).
