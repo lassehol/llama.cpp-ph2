@@ -286,7 +286,7 @@ static bool ggml_backend_cuda8_device_supports_op_impl(const struct ggml_tensor 
         // would silently produce wrong attention weights. See
         // ggml_cuda8_soft_max_is_plain().
 		case GGML_OP_SOFT_MAX: {
-			//if (op->src[0]->type == GGML_TYPE_F32) return false; // TEMP
+
 			if (op->type != GGML_TYPE_F32) return false;
 			if (!op->src[0] || op->src[0]->type != GGML_TYPE_F32) return false;
 			if (ggml_cuda8_soft_max_is_plain(op)) return true;
@@ -352,7 +352,7 @@ static bool ggml_backend_cuda8_device_supports_op_impl(const struct ggml_tensor 
 
         // contiguous copy
         case GGML_OP_CONT:
-			//if (op->src[0]->type == GGML_TYPE_F32) return false; // TEMP
+
             return (op->type == GGML_TYPE_F32 &&
                     op->src[0] && op->src[0]->type == GGML_TYPE_F32);
 
